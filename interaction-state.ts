@@ -37,6 +37,7 @@ type ScanItem = {
   author_handle: string | null;
   author_did: string | null;
   text: string | null;
+  alt_text: string | null;
   created_at: string | null;
   indexed_at: string | null;
   thread_root_uri: string | null;
@@ -110,6 +111,7 @@ function openDb() {
     }
   };
   maybeAdd("reply_to", "text");
+  maybeAdd("alt_text", "text");
   maybeAdd("root_author", "text");
   maybeAdd("needs_attention", "integer not null default 0");
   db.execute(
@@ -259,6 +261,18 @@ function computeInitialStatus(item: ScanItem): Status {
   return "ambient";
 }
 
+function extractPostText(text: string | null): string | null {
+  if (!text) return null;
+  const idx = text.indexOf("\n[image: ");
+  return idx >= 0 ? text.slice(0, idx).trim() || null : text;
+}
+
+function extractAltText(text: string | null): string | null {
+  if (!text) return null;
+  const match = text.match(/\n\[image: (.+)\]$/s);
+  return match ? match[1] : null;
+}
+
 function normFeedItem(x: any, source: Source): ScanItem {
   const base = {
     uri: x.uri,
@@ -267,7 +281,8 @@ function normFeedItem(x: any, source: Source): ScanItem {
     kind: inferKind(x, source),
     author_handle: x.author || x.actor || x.handle || null,
     author_did: null,
-    text: x.text || null,
+    text: extractPostText(x.text) || null,
+    alt_text: extractAltText(x.text) || null,
     created_at: x.time || null,
     indexed_at: x.time || null,
     thread_root_uri: null,
@@ -289,7 +304,8 @@ function normHydrantItem(x: any): ScanItem {
     kind: "post" as const,
     author_handle: x.handle || null,
     author_did: x.author || null,
-    text: x.text || null,
+    text: extractPostText(x.text) || null,
+    alt_text: extractAltText(x.text) || null,
     created_at: x.time || null,
     indexed_at: x.time || null,
     thread_root_uri: null,
@@ -369,10 +385,10 @@ async function scan(minutes = 180) {
     if (!existing) {
       database.query(
         `insert into items (
-          uri, cid, source, kind, author_handle, author_did, text, created_at, indexed_at,
+          uri, cid, source, kind, author_handle, author_did, text, alt_text, created_at, indexed_at,
           thread_root_uri, parent_uri, reply_to, root_author, upstream_safety, has_unsafe_upstream,
           needs_attention, first_seen_at, last_seen_at, status, raw_json
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           item.uri,
           item.cid,
@@ -381,6 +397,7 @@ async function scan(minutes = 180) {
           item.author_handle,
           item.author_did,
           item.text,
+          item.alt_text,
           item.created_at,
           item.indexed_at,
           item.thread_root_uri,
@@ -410,6 +427,7 @@ async function scan(minutes = 180) {
         author_handle = ?,
         author_did = ?,
         text = ?,
+        alt_text = ?,
         created_at = ?,
         indexed_at = ?,
         thread_root_uri = ?,
@@ -437,6 +455,7 @@ async function scan(minutes = 180) {
         item.author_handle,
         item.author_did,
         item.text,
+        item.alt_text,
         item.created_at,
         item.indexed_at,
         item.thread_root_uri,
@@ -476,7 +495,7 @@ async function scan(minutes = 180) {
 function listPending() {
   const database = openDb();
   const rows = [...database.queryEntries(
-    `select uri, cid, source, kind, author_handle, reply_to, root_author, text, created_at,
+    `select uri, cid, source, kind, author_handle, reply_to, root_author, text, alt_text, created_at,
             status, action_taken, decision_note, needs_attention, upstream_safety
      from items
      where status = 'pending'
@@ -490,7 +509,7 @@ function listPending() {
 function listAmbient() {
   const database = openDb();
   const rows = [...database.queryEntries(
-    `select uri, cid, source, kind, author_handle, reply_to, root_author, text, created_at,
+    `select uri, cid, source, kind, author_handle, reply_to, root_author, text, alt_text, created_at,
             status, action_taken, decision_note, needs_attention, upstream_safety
      from items
      where status = 'ambient'
@@ -504,7 +523,7 @@ function listAmbient() {
 function listAmbientShort() {
   const database = openDb();
   const rows = [...database.queryEntries(
-    `select uri, source, kind, author_handle, reply_to, root_author, text, created_at,
+    `select uri, source, kind, author_handle, reply_to, root_author, text, alt_text, created_at,
             upstream_safety
      from items
      where status = 'ambient'
@@ -527,7 +546,7 @@ async function heartbeat(minutes = 180) {
   await scan(minutes);
   const database = openDb();
   const pending = [...database.queryEntries(
-    `select uri, source, kind, author_handle, reply_to, root_author, text, created_at,
+    `select uri, source, kind, author_handle, reply_to, root_author, text, alt_text, created_at,
             upstream_safety
      from items
      where status = 'pending'
@@ -535,7 +554,7 @@ async function heartbeat(minutes = 180) {
      limit 20`,
   )];
   const ambient = [...database.queryEntries(
-    `select uri, source, kind, author_handle, reply_to, root_author, text, created_at,
+    `select uri, source, kind, author_handle, reply_to, root_author, text, alt_text, created_at,
             upstream_safety
      from items
      where status = 'ambient'
