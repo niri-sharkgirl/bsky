@@ -27,6 +27,7 @@ import {
 } from "./read.ts";
 import { getAuthedClient } from "./auth.ts";
 import { upsertManualItem } from "./db.ts";
+import { fetchHydrantPosts, type HydrantPost } from "./hydrant.ts";
 
 function inferKind(
   item: FormattedFeedItem | FormattedNotifItem,
@@ -140,11 +141,42 @@ function normalizeNotifItem(item: FormattedNotifItem) {
   return { ...base, needs_attention: computeNeedsAttention(base) } satisfies ScanItem;
 }
 
+function normalizeHydrantItem(item: HydrantPost) {
+  const base = {
+    uri: item.uri,
+    cid: item.cid || null,
+    source: "hydrant" as const,
+    kind: item.parentUri ? "reply" as const : "post" as const,
+    author_handle: item.handle || null,
+    author_did: item.author || null,
+    text: extractStoredPostText(item.text) || null,
+    alt_text: extractStoredAltText(item.text) || null,
+    created_at: item.time || null,
+    indexed_at: item.time || null,
+    thread_root_uri: item.threadRootUri || null,
+    parent_uri: item.parentUri || null,
+    reply_to: null,
+    root_author: null,
+    subject_uri: null,
+    subject_cid: null,
+    subject_did: null,
+    subject_handle: null,
+    upstream_safety: null,
+    has_unsafe_upstream: 0,
+    raw_json: JSON.stringify(item.raw),
+  };
+  return { ...base, needs_attention: computeNeedsAttention(base) } satisfies ScanItem;
+}
+
 function withinMinutes(timestamp: string | null | undefined, minutes: number) {
   if (!timestamp || minutes <= 0) return true;
   const time = new Date(timestamp).getTime();
   if (Number.isNaN(time)) return true;
   return time >= Date.now() - minutes * 60 * 1000;
+}
+
+function dedupeKey(item: ScanItem) {
+  return item.cid || item.uri;
 }
 
 export async function snapshotPostForState(
@@ -271,24 +303,46 @@ export async function markTrackedAction(
 }
 
 export async function scan(minutes = 180): Promise<ScanSummary> {
-  const { client, token } = await getAuthedClient();
   const selfHandle = getSelfHandle() ?? "";
-  const requests: Promise<{ raw: any[]; formatted: any[] }>[] = [
-    fetchTimelineView(client, token, 80),
-    fetchNotificationsView(client, token, 80),
-  ];
-  if (configuredCustomFeedUri) {
-    requests.push(fetchCustomFeedView(client, token, configuredCustomFeedUri, 60));
+  let authed:
+    | Awaited<ReturnType<typeof getAuthedClient>>
+    | null = null;
+  try {
+    authed = await getAuthedClient();
+  } catch {
+    authed = null;
   }
 
-  const [feedView, notifView, customFeedView] = await Promise.all(requests);
+  const requests: PromiseSettledResult<any>[] = await Promise.allSettled([
+    authed ? fetchTimelineView(authed.client, authed.token, 80) : Promise.resolve(null),
+    authed
+      ? fetchNotificationsView(authed.client, authed.token, 80)
+      : Promise.resolve(null),
+    configuredCustomFeedUri && authed
+      ? fetchCustomFeedView(authed.client, authed.token, configuredCustomFeedUri, 60)
+      : Promise.resolve(null),
+    fetchHydrantPosts(minutes),
+  ]);
+
+  const [feedResult, notifResult, customFeedResult, hydrantResult] = requests;
+  const feedView = feedResult.status === "fulfilled" ? feedResult.value : null;
+  const notifView = notifResult.status === "fulfilled" ? notifResult.value : null;
+  const customFeedView = customFeedResult.status === "fulfilled"
+    ? customFeedResult.value
+    : null;
+  const hydrantPosts = hydrantResult.status === "fulfilled" ? hydrantResult.value : [];
+
   const items: ScanItem[] = [
-    ...feedView.formatted
-      .filter((item: FormattedFeedItem) => withinMinutes(item.time, minutes))
-      .map((item: FormattedFeedItem) => normalizeFeedItem(item, "feed")),
-    ...notifView.formatted
-      .filter((item: FormattedNotifItem) => withinMinutes(item.time, minutes))
-      .map((item: FormattedNotifItem) => normalizeNotifItem(item)),
+    ...(feedView
+      ? feedView.formatted
+        .filter((item: FormattedFeedItem) => withinMinutes(item.time, minutes))
+        .map((item: FormattedFeedItem) => normalizeFeedItem(item, "feed"))
+      : []),
+    ...(notifView
+      ? notifView.formatted
+        .filter((item: FormattedNotifItem) => withinMinutes(item.time, minutes))
+        .map((item: FormattedNotifItem) => normalizeNotifItem(item))
+      : []),
     ...(customFeedView
       ? customFeedView.formatted
         .filter((item: FormattedFeedItem) => withinMinutes(item.time, minutes))
@@ -296,13 +350,15 @@ export async function scan(minutes = 180): Promise<ScanSummary> {
           normalizeFeedItem(item, "custom-feed")
         )
       : []),
+    ...hydrantPosts.map((item: HydrantPost) => normalizeHydrantItem(item)),
   ];
 
   const deduped = new Map<string, ScanItem>();
   for (const item of items) {
-    const prev = deduped.get(item.uri);
+    const key = dedupeKey(item);
+    const prev = deduped.get(key);
     if (!prev || (item.source === "notif" && prev.source !== "notif")) {
-      deduped.set(item.uri, item);
+      deduped.set(key, item);
     }
   }
 

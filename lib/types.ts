@@ -1,5 +1,5 @@
 export type RelationshipClass = "oomf" | "safe" | "unsafe";
-export type Source = "feed" | "notif" | "custom-feed" | "manual";
+export type Source = "feed" | "notif" | "hydrant" | "custom-feed" | "manual";
 export type ItemKind =
   | "post"
   | "reply"

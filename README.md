@@ -58,7 +58,7 @@ deno run --allow-env --allow-read --allow-net --allow-sys --allow-write bsky.ts 
 
 ## state behavior
 
-- `heartbeat` no longer shells out to another CLI and no longer depends on hydrant.
+- `heartbeat` runs internally and ingests local hydrant posts directly when a hydrant index is available.
 - `post`, `quote`, `reply`, `like`, and `follow` now write through the interaction-state layer directly.
 - Reply and feed scans now populate `parent_uri` and `thread_root_uri` instead of leaving them mostly empty.
 - Thread reads stay read-only.
