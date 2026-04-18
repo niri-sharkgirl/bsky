@@ -1,119 +1,76 @@
 # bsky
 
-bluesky client and interaction state manager. built for deno.
+Modular Bluesky client and interaction-state manager for Deno.
 
-## tools
+## entrypoint
 
-### bsky-client.ts
-
-read/write client for atproto/bluesky.
-
+```sh
+deno run --allow-env --allow-read --allow-net --allow-sys --allow-write bsky.ts <command> [args...] [--json] [--limit=N]
 ```
-deno run --allow-env --allow-read --allow-net --allow-sys --allow-write bsky-client.ts <command> [args...] [--json] [--limit=N]
-```
+
+## commands
 
 | command | args | what it does |
-|---------|------|-------------|
+|---------|------|--------------|
 | `check` | none | verify session is alive |
 | `feed` | none | home timeline with reply context |
-| `notif` | none | notifications (pretty-print) |
-| `user-feed` | `<handle>` | someone's recent posts with reply context |
+| `notif` | none | notifications with reply context |
+| `user-feed` | `<handle>` | someone's recent posts |
+| `custom-feed` | `<feed-uri>` | fetch a generator feed |
 | `thread` | `<post-uri>` | full thread context around a post |
 | `profile` | `<handle>` | profile info |
+| `set-bio` | `<text>` | update your profile description |
 | `follow` | `<handle>` | follow someone |
 | `post` | `<text>` | create a standalone post |
-| `quote` | `<at-uri> [cid] <text>` | quote post with optional comment |
-| `reply` | `<parent-uri> <text>` | reply to a post (resolves thread root automatically) |
-| `like` | `<uri>` | like a post |
-| `like-n` | `<index>` | like a post from the last feed/notif cache by number |
-| `reply-n` | `<index> <text>` | reply to a cached post by number |
-| `cached` | none | show all posts in the current feed cache |
-| `cached-search` | `<query>` | filter cached posts by text or author |
-| `delete` | `<at-uri>` | delete one of my records |
-| `dm-list` | none | list chat conversations |
-| `dm-messages` | `<convo-id>` | read messages from a DM conversation |
-| `dm-send` | `<handle\|did> <text>` | start DM conversation and send message |
-| `dm-reply` | `<convo-id> <text>` | reply in existing DM conversation |
-| `custom-feed` | `<feed-uri>` | custom feed generator |
-
-all commands accept `--json` for raw output.
-
-### how it works
-
-- atcute client for reads, raw fetch for writes
-- atcute identity helpers for DID→PDS resolution
-- resolveCid hits the record's home PDS directly
-- all writes verify themselves by reading back the record
-- `thread` walks up to root (ancestors) and down (replies)
-- richtext facets: auto-detects @mentions and urls
-- reply context hydrates full thread data, shows upstream author chain
-
-### reply gotchas
-
-- `root` = the original post that started the thread
-- `parent` = the post you're directly replying to
-- if replying to the thread starter directly, root and parent are the same
-- `reply` resolves the true root automatically
-
-### bsky chat (DMs)
-
-- all chat XRPC calls go through the PDS with `Atproto-Proxy: did:web:api.bsky.chat#bsky_chat` header
-- `getConvoForMembers` to get/create convos, `sendMessage` to send, `getMessages` to read
-- $type must be `chat.bsky.convo.defs#messageInput`
-
-## interaction-state.ts
-
-deduplication and triage system. tracks every post/notification seen and what action was taken.
-
-```
-deno run --allow-env --allow-read --allow-net --allow-sys --allow-write --allow-run interaction-state.ts <command> [args...]
-```
-
-| command | args | what it does |
-|---------|------|-------------|
-| `scan` | `[minutes]` | pull recent feed/notif data into the db. default 180min |
+| `quote` | `<at-uri> [cid] <text>` | quote a post |
+| `reply` | `<parent-uri> <text>` | reply to a post |
+| `like` | `<uri> [cid]` | like a post |
+| `like-n` | `<index>` | like a cached post |
+| `reply-n` | `<index> <text>` | reply to a cached post |
+| `cached` | none | show cached feed/notif items |
+| `cached-search` | `<query>` | search cached items |
+| `delete` | `<at-uri>` | delete one of your records |
+| `dm-list` | none | list DM conversations |
+| `dm-messages` | `<convo-id>` | read a DM thread |
+| `dm-send` | `<handle\|did> <text>` | start/send a DM |
+| `dm-reply` | `<convo-id> <text>` | reply in an existing DM |
+| `scan` | `[minutes]` | ingest recent feed/notif/custom-feed items into the DB |
 | `pending` | none | list items needing attention |
-| `ambient` | none | list recently-seen items |
+| `ambient` | none | list recently seen ambient items |
 | `ambient-short` | none | compact ambient view |
-| `heartbeat` | `[minutes]` | scan + show pending + ambient. main entry point |
-| `mark` | `<uri> <status> [action] [note]` | update an item's status |
-| `cleanup-pending` | none | demote stale pending items to seen |
-| `reclassify` | none | fix safety classifications after relationship changes |
+| `heartbeat` | `[minutes]` | scan + show pending + ambient |
+| `cleanup-pending` | none | demote stale pending items |
+| `reclassify` | none | recompute safety-based item status |
+| `seed-relationships` | none | seed relationships table |
+| `relationships` | none | list all relationships |
 | `add` | `<did> <handle> <trust> [note]` | add/override a relationship |
-| `relationships` | none | list all known relationships |
-| `seed-relationships` | none | bootstrap relationships from people files |
+| `mark` | `<uri> <status> [action] [note]` | manually update an item's state |
 
-### statuses
+## structure
 
-- `unseen` — just ingested
-- `seen` — looked at, no action needed
-- `ambient` — worth knowing about
-- `acted` — did something (replied, liked, followed)
-- `ignored` — explicitly dismissed
-- `pending` — needs attention
+- `bsky.ts` is the only CLI entrypoint.
+- `lib/auth.ts` handles auth/session/profile writes.
+- `lib/read.ts` owns thread hydration and feed/notif fetching.
+- `lib/write.ts` owns record writes, CID/handle resolution, and DMs.
+- `lib/state.ts` owns normalization, heartbeat, and interaction-state actions.
+- `lib/db.ts` owns SQLite schema and relationship/item persistence.
+- `lib/cache.ts` owns feed cache helpers and shared text helpers.
 
-### workflow
+## state behavior
 
-1. start with `heartbeat [minutes]` — scans everything into the db
-2. check `pending` for items needing response
-3. check `ambient` for what people are up to
-4. before replying or liking, verify the item isn't already `acted`
-5. after action, mark with `mark <uri> acted <action>`
-
-## scripts/
-
-utility scripts:
-
-- `add-fragment.ts` — add a fragment to the site and redeploy
-- `standard-site.ts` — manage standard.site publication records
-- `update-profile.ts` — update bsky profile (display name, bio, avatar)
-- `update-bio.ts` — update bio text
-- `hydrant-poll.ts` — poll local hydrant for new posts from tracked people
-- `bootstrap-reconcile.ts` / `manual-reconcile*.ts` — one-time data reconciliation
-- `bsky-follow.ts` / `bsky-session.ts` / `check-new.ts` — older utility scripts
+- `heartbeat` no longer shells out to another CLI and no longer depends on hydrant.
+- `post`, `quote`, `reply`, `like`, and `follow` now write through the interaction-state layer directly.
+- Reply and feed scans now populate `parent_uri` and `thread_root_uri` instead of leaving them mostly empty.
+- Thread reads stay read-only.
 
 ## setup
 
-- deno >= 1.x
-- `.secrets` file with `BLUESKY_HANDLE`, `BLUESKY_PASSWORD`, `BLUESKY_DID`
-- secrets loaded via dotenv in scripts that need auth
+- Deno with `nodeModulesDir` enabled via `deno.json`
+- `.secrets` file with `BLUESKY_HANDLE` and `BLUESKY_PASSWORD`
+- optional env vars:
+  - `BLUESKY_PDS_URL`
+  - `BLUESKY_CUSTOM_FEED_URI`
+
+## note
+
+The repo history was rewritten to remove the old sensitive `scripts/bsky.mjs`, and `git filter-repo` removed the `origin` remote as part of that process. Re-add your remote before the next push.
