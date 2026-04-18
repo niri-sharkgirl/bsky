@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@atcute/bluesky": "^3.3.0",
+    "@atcute/client": "^4.2.1"
+  }
+}

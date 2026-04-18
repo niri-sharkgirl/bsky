@@ -440,7 +440,7 @@ async function scan(minutes = 180) {
         last_seen_at = ?,
         raw_json = ?,
         status = case
-          when status in ('acted', 'ignored', 'seen') then status
+          when status in ('acted', 'handled', 'ignored', 'seen') then status
           when ? = 1 then 'pending'
           when source = 'notif' then 'seen'
           when author_handle = ? then 'seen'

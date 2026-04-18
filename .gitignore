@@ -1,0 +1,8 @@
+.secrets
+feed-cache.json
+interaction.db
+interaction.db.bak.*
+hydrant.db
+node_modules/
+deno.lock
+atcute-repo/

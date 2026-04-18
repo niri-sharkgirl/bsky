@@ -1,7 +1,85 @@
 import { Client, ok, simpleFetchHandler } from "npm:@atcute/client@4.2.1";
 import type { ActorIdentifier, ResourceUri } from "npm:@atcute/lexicons@1.2.9";
 import type {} from "npm:@atcute/bluesky@3.3.0";
+import {
+  getPdsEndpoint,
+  webDidToDocumentUrl,
+  isPlcDid,
+  isWebDid,
+} from "npm:@atcute/identity";
 import { DB } from "https://deno.land/x/sqlite@v3.9.1/mod.ts";
+
+// --- feed cache ---
+
+const CACHE_PATH = new URL("./feed-cache.json", import.meta.url).pathname;
+
+interface CachedPost {
+  index: number;
+  uri: string;
+  cid: string;
+  author: string;
+  text: string;
+  time: string;
+  likes: number;
+  replies: number;
+  isRepost: boolean;
+  repostedBy?: string;
+}
+
+function writeFeedCache(posts: CachedPost[]): void {
+  Deno.writeTextFileSync(CACHE_PATH, JSON.stringify(posts, null, 2));
+}
+
+function readFeedCache(): CachedPost[] {
+  try {
+    return JSON.parse(Deno.readTextFileSync(CACHE_PATH));
+  } catch {
+    return [];
+  }
+}
+
+function getFromCache(index: number): CachedPost | undefined {
+  return readFeedCache().find((p) => p.index === index);
+}
+
+function cacheFeedItems(items: any[], startAt = 1): void {
+  const posts: CachedPost[] = items
+    .map((item: any, i: number) => {
+      const p = item.post;
+      const reason = item.reason;
+      return {
+        index: startAt + i,
+        uri: p?.uri || item.uri || "",
+        cid: p?.cid || item.cid || "",
+        author: p?.author?.handle || item.author?.handle || "?",
+        text: trunc((p?.record?.text || item.record?.text || "") + getEmbedAltText(p?.embed || item.embed)),
+        time: p?.indexedAt || item.indexedAt || "",
+        likes: p?.likeCount ?? item.likeCount ?? 0,
+        replies: p?.replyCount ?? item.replyCount ?? 0,
+        isRepost: !!reason,
+        repostedBy: reason?.by?.handle,
+      };
+    })
+    .filter((p) => p.uri);
+  writeFeedCache(posts);
+}
+
+function cacheNotifItems(notifs: any[], startAt = 1): void {
+  const posts: CachedPost[] = notifs
+    .map((x: any, i: number) => ({
+      index: startAt + i,
+      uri: x.uri || "",
+      cid: x.cid || "",
+      author: x.author?.handle || "?",
+      text: trunc((x.record?.text || "") + getEmbedAltText(x.embeds?.[0])),
+      time: x.indexedAt || "",
+      likes: 0,
+      replies: 0,
+      isRepost: false,
+    }))
+    .filter((p) => p.uri);
+  writeFeedCache(posts);
+}
 
 // --- config ---
 
@@ -325,15 +403,30 @@ async function resolveReplyRefs(
 ): Promise<
   { parent: { uri: string; cid: string }; root: { uri: string; cid: string } }
 > {
-  const thread = await getPostThread(parentUri, token);
-  const parentPost = thread?.post;
-  const rootPost = thread ? getThreadRootPost(thread) : undefined;
+  // use getPosts instead of getPostThread — we only need the parent
+  // record (for uri/cid and reply.root), not the whole thread tree.
+  // getPostThread with depth=100 was causing hangs on slow PDS responses.
+  const res = await fetch(
+    `${pdsUrl}/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(parentUri)}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error("could not resolve parent post");
+  const data = await res.json();
+  const parentPost = data.posts?.[0];
   if (!parentPost?.uri || !parentPost?.cid) {
     throw new Error("could not resolve parent post");
   }
-  const root = rootPost?.uri && rootPost?.cid
-    ? { uri: rootPost.uri, cid: rootPost.cid }
+
+  // use the parent post's reply.root directly.
+  // every reply stores the root URI its author intended, so this is
+  // correct 99% of the time. walking the parent chain can fail when
+  // posts are deleted (the chain breaks) or when self-replies create
+  // branch points. taking the parent's root is simpler and more reliable.
+  const parentReplyRoot = parentPost?.record?.reply?.root;
+  const root = parentReplyRoot?.uri && parentReplyRoot?.cid
+    ? { uri: parentReplyRoot.uri, cid: parentReplyRoot.cid }
     : { uri: parentPost.uri, cid: parentPost.cid };
+
   return {
     parent: { uri: parentPost.uri, cid: parentPost.cid },
     root,
@@ -571,6 +664,60 @@ function byteOffset(str: string, charIdx: number): number {
   return new TextEncoder().encode(str.slice(0, charIdx)).length;
 }
 
+// --- resolve URI to CID ---
+
+let myDid = "";
+
+async function resolvePdsForDid(did: string): Promise<string> {
+  let doc;
+  if (isPlcDid(did)) {
+    const res = await fetch(`https://plc.directory/${did}`);
+    if (!res.ok) throw new Error(`failed to resolve did:plc ${did}`);
+    doc = await res.json();
+  } else if (isWebDid(did)) {
+    const url = webDidToDocumentUrl(did);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`failed to resolve did:web ${did}`);
+    doc = await res.json();
+  } else {
+    throw new Error(`unsupported did method: ${did}`);
+  }
+  const pds = getPdsEndpoint(doc);
+  if (!pds) throw new Error(`no pds endpoint found in ${did}`);
+  return pds;
+}
+
+async function resolveCid(uri: string): Promise<string> {
+  const m = uri.match(/at:\/\/([^\/]+)\/([^\/]+)\/([^\/]+)/);
+  if (!m) throw new Error(`invalid uri: ${uri}`);
+  const [, repo, collection, rkey] = m;
+  const params =
+    `repo=${encodeURIComponent(repo)}&collection=${encodeURIComponent(collection)}&rkey=${encodeURIComponent(rkey)}`;
+
+  // if the repo is our own DID, use local PDS
+  if (repo === myDid) {
+    const res = await fetch(
+      `${pdsUrl}/xrpc/com.atproto.repo.getRecord?${params}`,
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data.cid) return data.cid;
+    }
+  }
+
+  // resolve the record's home PDS directly via DID document
+  const remotePds = await resolvePdsForDid(repo);
+  const res = await fetch(
+    `${remotePds}/xrpc/com.atproto.repo.getRecord?${params}`,
+  );
+  if (res.ok) {
+    const data = await res.json();
+    if (data.cid) return data.cid;
+  }
+
+  throw new Error(`failed to resolve cid for ${uri}`);
+}
+
 // --- resolve handle to DID ---
 
 async function resolveHandle(handle: string): Promise<string> {
@@ -582,6 +729,24 @@ async function resolveHandle(handle: string): Promise<string> {
   if (!res.ok) throw new Error(`could not resolve handle ${handle}`);
   const { did } = await res.json();
   return did;
+}
+
+// --- bsky chat (DM) helpers ---
+// chat endpoints are proxied through the PDS with Atproto-Proxy header
+
+const CHAT_PROXY = "did:web:api.bsky.chat#bsky_chat";
+
+async function chatFetch(path: string, token: string, init?: RequestInit): Promise<any> {
+  const url = `${pdsUrl}/xrpc/${path}`;
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  headers.set("Atproto-Proxy", CHAT_PROXY);
+  const res = await fetch(url, { ...init, headers });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({ message: res.statusText }));
+    throw new Error(`chat api error: ${e.message || JSON.stringify(e)}`);
+  }
+  return await res.json();
 }
 
 // --- commands ---
@@ -596,6 +761,7 @@ try {
   const session = await auth();
   const token = session.accessJwt;
   const did = session.did;
+  myDid = did;
   const client = readClient(token);
 
   switch (cmd) {
@@ -625,6 +791,7 @@ try {
       } else {
         const replyMap = await hydrateReplyContext(timeline.feed, token);
         prettyPrintFeed(timeline.feed, replyMap);
+        cacheFeedItems(timeline.feed);
       }
       break;
     }
@@ -652,6 +819,7 @@ try {
       } else {
         const replyMap = await hydrateReplyContext(f.feed, token);
         prettyPrintFeed(f.feed, replyMap);
+        cacheFeedItems(f.feed);
       }
       break;
     }
@@ -680,6 +848,7 @@ try {
       } else {
         const replyMap = await hydrateReplyContext(f.feed, token);
         prettyPrintFeed(f.feed, replyMap);
+        cacheFeedItems(f.feed);
       }
       break;
     }
@@ -719,6 +888,7 @@ try {
         ));
       } else {
         prettyPrintNotifs(n.notifications, replyMap);
+        cacheNotifItems(n.notifications);
       }
       break;
     }
@@ -810,6 +980,40 @@ try {
       break;
     }
 
+    case "quote": {
+      const quoteUriIdx = args.findIndex((a) => a.startsWith("at://"));
+      let quoteUri: string | undefined;
+      let quoteCid: string | undefined;
+      if (quoteUriIdx !== -1) {
+        quoteUri = args[quoteUriIdx];
+        const maybeCid = args[quoteUriIdx + 1];
+        if (maybeCid && maybeCid.startsWith("bafy")) {
+          quoteCid = maybeCid;
+        }
+      }
+      if (!quoteUri) throw new Error("quote requires an at:// uri of the post to quote");
+      if (!quoteCid) {
+        quoteCid = await resolveCid(quoteUri);
+      }
+      const textArgs = args.filter((a) => a !== quoteUri && a !== quoteCid);
+      const text = textArgs.join(" ");
+      const facets = await buildFacets(text, token);
+      const record: any = {
+        $type: "app.bsky.feed.post",
+        text,
+        createdAt: new Date().toISOString(),
+        langs: ["en"],
+        embed: {
+          $type: "app.bsky.embed.record",
+          record: { uri: quoteUri, cid: quoteCid },
+        },
+      };
+      if (facets.length > 0) record.facets = facets;
+      const r = await write("app.bsky.feed.post", record, did, token);
+      console.log("quoted:", r.uri);
+      break;
+    }
+
     case "reply": {
       const [parentUri, second, ...rest] = args;
       if (!parentUri) throw new Error("reply requires at least parentUri");
@@ -843,23 +1047,7 @@ try {
       if (!uri) throw new Error("like requires post uri");
       let cid = cidArg;
       if (!cid) {
-        const m = uri.match(/at:\/\/([^\/]+)\/([^\/]+)\/([^\/]+)/);
-        if (!m) throw new Error("invalid uri");
-        const [, repo, collection, rkey] = m;
-        const rec = await fetch(
-          `${pdsUrl}/xrpc/com.atproto.repo.getRecord?repo=${
-            encodeURIComponent(repo)
-          }&collection=${encodeURIComponent(collection)}&rkey=${
-            encodeURIComponent(rkey)
-          }`,
-        );
-        if (!rec.ok) {
-          const e = await rec.text();
-          throw new Error(`failed to resolve cid: ${e}`);
-        }
-        const data = await rec.json();
-        cid = data.cid;
-        if (!cid) throw new Error("failed to resolve cid");
+        cid = await resolveCid(uri);
       }
       const r = await write(
         "app.bsky.feed.like",
@@ -879,6 +1067,87 @@ try {
         { like_uri: r.uri },
       );
       console.log("liked:", r.uri);
+      break;
+    }
+
+    case "cached":
+    case "cached-search": {
+      const query = cmd === "cached-search" ? args.join(" ").toLowerCase() : "";
+      const cache = readFeedCache();
+      if (cache.length === 0) {
+        console.log("(no cached posts — run feed, notif, or user-feed first)");
+        break;
+      }
+      for (const p of cache) {
+        if (query && !p.text.toLowerCase().includes(query) && !p.author.toLowerCase().includes(query)) continue;
+        const time = new Date(p.time).toLocaleString("en-US", {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+          hour12: false, timeZone: "UTC",
+        });
+        const prefix = p.isRepost ? `[repost by ${p.repostedBy}]` : "";
+        console.log(`#${p.index} ${p.author} ${prefix}`);
+        if (p.text) console.log(`  ${trunc(p.text, 120)}`);
+        console.log(`  ${time}  ♥${p.likes} ↩${p.replies}  ${p.uri}`);
+        console.log();
+      }
+      break;
+    }
+
+    case "like-n": {
+      const index = parseInt(args[0], 10);
+      if (!index) throw new Error("like-n requires an index number");
+      const post = getFromCache(index);
+      if (!post) throw new Error(`no post at index ${index} in cache`);
+      const r = await write(
+        "app.bsky.feed.like",
+        {
+          $type: "app.bsky.feed.like",
+          subject: { uri: post.uri, cid: post.cid },
+          createdAt: new Date().toISOString(),
+        },
+        did,
+        token,
+      );
+      markInteraction(
+        post.uri,
+        "acted",
+        "liked",
+        `liked via like-n #${index}`,
+        { like_uri: r.uri },
+      );
+      console.log(`liked #${index}: ${post.author} — ${trunc(post.text, 60)}`);
+      break;
+    }
+
+    case "reply-n": {
+      const index = parseInt(args[0], 10);
+      if (!index) throw new Error("reply-n requires an index number");
+      const text = args.slice(1).join(" ");
+      if (!text) throw new Error("reply-n requires text after the index");
+      const post = getFromCache(index);
+      if (!post) throw new Error(`no post at index ${index} in cache`);
+      const { parent, root } = await resolveReplyRefs(post.uri, token);
+      const facets = await buildFacets(text, token);
+      const r = await write(
+        "app.bsky.feed.post",
+        {
+          $type: "app.bsky.feed.post",
+          text,
+          facets,
+          createdAt: new Date().toISOString(),
+          reply: { root, parent },
+        },
+        did,
+        token,
+      );
+      markInteraction(
+        post.uri,
+        "acted",
+        "replied",
+        `replied via reply-n #${index}`,
+        { reply_uri: r.uri },
+      );
+      console.log(`replied #${index}: ${post.author} — "${text}"`);
       break;
     }
 
@@ -906,10 +1175,113 @@ try {
       break;
     }
 
+    case "dm-list": {
+      // list all conversations
+      const data = await chatFetch("chat.bsky.convo.listConvos?limit=50", token);
+      const convos = data.convos || [];
+      if (jsonFlag) {
+        console.log(JSON.stringify(convos, null, 2));
+      } else {
+        if (convos.length === 0) {
+          console.log("no conversations yet");
+        } else {
+          for (const c of convos) {
+            const other = c.members?.find((m: any) => m.did !== did);
+            const handle = other?.handle || other?.did || "?";
+            const name = other?.displayName || "";
+            const unread = c.unreadCount || 0;
+            const status = c.status || "open";
+            const label = unread > 0 ? ` (${unread} unread)` : "";
+            console.log(`[${c.id}] ${name ? name + " " : ""}@${handle}${label} [${status}]`);
+          }
+        }
+      }
+      break;
+    }
+
+    case "dm-messages": {
+      // get messages from a conversation
+      const convoId = args[0];
+      if (!convoId) throw new Error("dm-messages requires a conversation id");
+      const msgLimit = limit || 30;
+      const data = await chatFetch(`chat.bsky.convo.getMessages?convoId=${convoId}&limit=${msgLimit}`, token);
+      const msgs = data.messages || [];
+      if (jsonFlag) {
+        console.log(JSON.stringify(msgs, null, 2));
+      } else {
+        for (const m of msgs) {
+          const sender = m.sender?.handle || m.sender?.did || "?";
+          const me = m.sender?.did === did;
+          const prefix = me ? "me" : sender;
+          const time = m.sentAt ? new Date(m.sentAt).toLocaleString() : "";
+          console.log(`[${time}] ${prefix}: ${m.text || "(no text)"}`);
+        }
+      }
+      break;
+    }
+
+    case "dm-send": {
+      // send a DM to a handle/did
+      const recipient = args[0];
+      const text = args.slice(1).join(" ");
+      if (!recipient || !text) throw new Error("usage: dm-send <handle|did> <text>");
+      const recipientDid = await resolveHandle(recipient);
+      // get or create convo
+      let convoId: string;
+      try {
+        const convoData = await chatFetch(
+          `chat.bsky.convo.getConvoForMembers?members=${recipientDid}`, token,
+        );
+        convoId = convoData.convo.id;
+      } catch {
+        throw new Error(`could not start conversation with ${recipient}: they may have DMs restricted`);
+      }
+      const msgData = await chatFetch("chat.bsky.convo.sendMessage", token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          convoId,
+          message: {
+            text,
+            createdAt: new Date().toISOString(),
+            "$type": "chat.bsky.convo.defs#messageInput",
+          },
+        }),
+      });
+      console.log(`sent to ${recipient} (convo ${convoId}): ${text}`);
+      console.log(`message id: ${msgData.id}`);
+      break;
+    }
+
+    case "dm-reply": {
+      // send a DM in an existing conversation
+      const convoId = args[0];
+      const text = args.slice(1).join(" ");
+      if (!convoId || !text) throw new Error("usage: dm-reply <convo-id> <text>");
+      const msgData = await chatFetch("chat.bsky.convo.sendMessage", token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          convoId,
+          message: {
+            text,
+            createdAt: new Date().toISOString(),
+            "$type": "chat.bsky.convo.defs#messageInput",
+          },
+        }),
+      });
+      console.log(`sent in convo ${convoId}: ${text}`);
+      console.log(`message id: ${msgData.id}`);
+      break;
+    }
+
     default:
       console.error("usage: bsky <command> [args...] [--json]");
       console.error(
-        "commands: check, feed, user-feed, custom-feed, notif, thread, profile, set-bio, follow, post, reply, like, delete",
+        "commands: check, feed, user-feed, custom-feed, notif, thread, profile, set-bio, follow, post, quote, reply, like, delete",
+      );
+      console.error(
+        "  dm-list, dm-messages, dm-send, dm-reply: bsky DM support",
       );
       console.error(
         "  feed, user-feed, custom-feed, notif: pretty-print by default, --json for raw",
