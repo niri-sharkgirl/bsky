@@ -289,6 +289,8 @@ export async function fetchNotificationsView(
   };
 }
 
+const NOISY_BOTS = new Set(["bot-tan.suibari.com"]);
+
 export async function printFeedView(view: { raw: any[] }, token: string) {
   const replyMap = await hydrateReplyContext(view.raw, token);
   for (const item of view.raw) {
@@ -312,6 +314,16 @@ export async function printFeedView(view: { raw: any[] }, token: string) {
     const replyContext = reply && replyMap
       ? replyMap.get(reply.parent?.uri)
       : undefined;
+    // suppress noisy bots unless they're replying to someone we trust
+    if (NOISY_BOTS.has(handle)) {
+      if (replyContext?.upstreamRelationshipClasses) {
+        const hasKnownUpstream = Object.values(replyContext.upstreamRelationshipClasses)
+          .some((cls) => cls === "oomf" || cls === "safe");
+        if (!hasKnownUpstream) continue;
+      } else {
+        continue;
+      }
+    }
     console.log(`${time} ${handle} ${prefix}`);
     if (text) console.log(`  ${text}`);
     if (alt) console.log(`  ${alt.trim()}`);
