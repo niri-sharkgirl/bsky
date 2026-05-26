@@ -36,7 +36,7 @@ const commands = {
     );
     console.log("🔍 Found", results.length, 'songs matching "' + query + '":');
     for (const s of results.slice(0, 20)) {
-      console.log("  " + s.id.slice(0,8), "|", s.title, "—", s.artist, "(" + s.album + ") [" + formatTime(s.durationSeconds) + "]");
+      console.log("  " + s.id, "|", s.title, "—", s.artist, "(" + s.album + ") [" + formatTime(s.durationSeconds) + "]");
     }
     if (results.length > 20) console.log("  ... and", results.length - 20, "more");
   },
