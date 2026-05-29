@@ -2,16 +2,16 @@
 // Sister Radio CLI — queue songs, check the queue, browse the library
 // Usage: deno run -A radio-cli.ts <command> [args]
 
-import { getQueue, listSongs, enqueue, addSongs, removeFromQueue, clearQueue } from "./lib/radio.ts";
+import { getQueue, listSongs, enqueue, addSongs, removeFromQueue, clearQueue, uploadSong } from "./lib/radio.ts";
 
 const commands = {
   async now() {
     const q = await getQueue();
-    if (q.nowPlaying) {
-      console.log("🎵 Now playing:", q.nowPlaying.title, "—", q.nowPlaying.artist);
-      console.log("   Album:", q.nowPlaying.album, "|", formatTime(q.nowPlaying.durationSeconds));
+    if (q.currentSong) {
+      console.log("🎵 Now playing:", q.currentSong.title, "—", q.currentSong.artist);
+      console.log("   Album:", q.currentSong.album, "|", formatTime(q.currentSong.durationSeconds));
       const pos = q.state?.positionSeconds || 0;
-      console.log("   Position:", formatTime(pos), "/", formatTime(q.nowPlaying.durationSeconds));
+      console.log("   Position:", formatTime(pos), "/", formatTime(q.currentSong.durationSeconds));
     } else {
       console.log("Nothing playing");
     }
@@ -22,7 +22,7 @@ const commands = {
     console.log("📋 Queue (" + (q.queue?.length || 0) + " items):");
     if (!q.queue?.length) { console.log("  (empty)"); return; }
     for (const item of q.queue) {
-      console.log("  " + item.position + ".", item.song?.title || "(processing)", "—", item.song?.artist || "", "[" + formatTime(item.song?.durationSeconds) + "]");
+      console.log("  " + item.position + ".", item.title || "(unknown)", "—", item.artist || "", "[" + (item.album || "no album") + "]");
     }
   },
 
@@ -46,8 +46,8 @@ const commands = {
     const result = await enqueue(ids);
     console.log("✓ Queue now has", result.queue?.length, "items");
     const last = result.queue?.[result.queue.length - 1];
-    if (last?.song) {
-      console.log("  Last added:", last.song.title, "at position", last.position);
+    if (last?.title) {
+      console.log("  Last added:", last.title, "at position", last.position);
     }
   },
 
@@ -80,6 +80,32 @@ const commands = {
     console.log("🗑️ Clearing queue...");
     const result = await clearQueue();
     console.log("✓ Cleared. Queue:", result.queue?.length, "items");
+  },
+
+  async upload(filePath: string, ...meta: string[]) {
+    if (!filePath) {
+      console.log("Usage: radio-cli.ts upload <file_path> [title] [artist] [album]");
+      return;
+    }
+    
+    // parse optional positional metadata
+    const input: any = { filePath };
+    if (meta[0]) input.title = meta[0];
+    if (meta[1]) input.artist = meta[1];
+    if (meta[2]) input.album = meta[2];
+    input.addToQueue = true;
+    
+    console.log("📤 Uploading:", filePath);
+    try {
+      const result = await uploadSong(input);
+      console.log("✓ Uploaded", result.songs.length, "song(s)");
+      for (const s of result.songs) {
+        console.log("  ", s.title, "—", s.artist, "[" + formatTime(s.durationSeconds) + "]");
+      }
+      console.log("Queue:", result.snapshot.queue?.length, "items");
+    } catch (e) {
+      console.error("✗ Upload failed:", e.message || e);
+    }
   },
 };
 
