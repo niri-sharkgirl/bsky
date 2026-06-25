@@ -32,7 +32,7 @@ import {
   scan,
   upsertManualItem,
 } from "./lib/state.ts";
-import { buildFacets, chatFetch, deleteRecord, resolveCid, resolveHandle, resolveReplyRefs, writeRecord } from "./lib/write.ts";
+import { buildFacets, chatFetch, deleteRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, writeRecord } from "./lib/write.ts";
 import type { Action, RelationshipClass, Status } from "./lib/types.ts";
 
 function parseCliOptions(argv: string[]) {
@@ -99,8 +99,15 @@ try {
     }
 
     case "thread": {
-      const uri = args[0];
-      if (!uri) throw new Error("thread requires a post uri");
+      let uri = args[0];
+      if (!uri) throw new Error("thread requires a post uri or handle rkey");
+      // accept "handle rkey" as two args, resolve to at-uri
+      if (!uri.startsWith("at://") && !uri.startsWith("https://")) {
+        const rkey = args[1];
+        if (!rkey) throw new Error("provide a full at-uri or handle rkey");
+        const did = await resolveHandle(uri);
+        uri = `at://${did}/app.bsky.feed.post/${rkey}`;
+      }
       const { client } = await getAuthedClient();
       const thread = await ok(
         client.get("app.bsky.feed.getPostThread", {
@@ -114,6 +121,26 @@ try {
           2,
         ),
       );
+      break;
+    }
+
+    case "get-post": {
+      let uri = args[0];
+      if (!uri) throw new Error("get-post requires a post uri or handle rkey");
+      if (!uri.startsWith("at://") && !uri.startsWith("https://")) {
+        const rkey = args[1];
+        if (!rkey) throw new Error("provide a full at-uri or handle rkey");
+        const did = await resolveHandle(uri);
+        uri = `at://${did}/app.bsky.feed.post/${rkey}`;
+      }
+      const { client } = await getAuthedClient();
+      const posts = await ok(
+        client.get("app.bsky.feed.getPosts", {
+          params: { uris: [uri as ResourceUri] },
+        }),
+      );
+      if (posts.posts?.length) console.log(JSON.stringify(posts.posts[0], null, 2));
+      else console.log("post not found");
       break;
     }
 
@@ -197,52 +224,105 @@ try {
       const text = args.join(" ");
       if (!text) throw new Error("post requires text");
       const { session, did, token } = await getAuthedClient();
-      const facets = await buildFacets(text);
       const createdAt = new Date().toISOString();
-      const record: any = {
-        $type: "app.bsky.feed.post",
-        text,
-        createdAt,
-        langs: ["en"],
-      };
-      if (facets.length > 0) record.facets = facets;
-      const result = await writeRecord("app.bsky.feed.post", record, did, token);
-      const db = openDb();
-      upsertManualItem(db, {
-        uri: result.uri,
-        cid: result.cid ?? null,
-        source: "manual",
-        kind: "post",
-        status: "acted",
-        action: "posted",
-        note: "posted via bsky",
-        author_handle: session.handle,
-        author_did: did,
-        text,
-        created_at: createdAt,
-        indexed_at: createdAt,
-        raw_json: JSON.stringify(result),
-      });
-      db.close();
-      console.log("posted:", result.uri);
+
+      // Auto-thread: split long posts into chained replies
+      const chunks = splitIntoThreadChunks(text);
+
+      if (chunks.length === 1) {
+        // Short post — normal path
+        const facets = await buildFacets(chunks[0]);
+        const record: any = {
+          $type: "app.bsky.feed.post",
+          text: chunks[0],
+          createdAt,
+          langs: ["en"],
+        };
+        if (facets.length > 0) record.facets = facets;
+        const result = await writeRecord("app.bsky.feed.post", record, did, token);
+        const db = openDb();
+        upsertManualItem(db, {
+          uri: result.uri,
+          cid: result.cid ?? null,
+          source: "manual",
+          kind: "post",
+          status: "acted",
+          action: "posted",
+          note: "posted via bsky",
+          author_handle: session.handle,
+          author_did: did,
+          text: chunks[0],
+          created_at: createdAt,
+          indexed_at: createdAt,
+          raw_json: JSON.stringify(result),
+        });
+        db.close();
+        console.log("posted:", result.uri);
+      } else {
+        // Long post — thread it
+        let prevUri: string | undefined;
+        let prevCid: string | undefined;
+        let rootUri: string | undefined;
+        let rootCid: string | undefined;
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const facets = await buildFacets(chunk);
+          const record: any = {
+            $type: "app.bsky.feed.post",
+            text: chunk,
+            createdAt,
+            langs: ["en"],
+          };
+          if (facets.length > 0) record.facets = facets;
+          if (prevUri && prevCid && rootUri && rootCid) {
+            record.reply = {
+              parent: { uri: prevUri, cid: prevCid },
+              root: { uri: rootUri, cid: rootCid }, // root always points to first post
+            };
+          }
+          const result = await writeRecord("app.bsky.feed.post", record, did, token);
+          // Save first post as root reference for all subsequent posts
+          if (i === 0) {
+            rootUri = result.uri;
+            rootCid = result.cid ?? undefined;
+          }
+          prevUri = result.uri;
+          prevCid = result.cid ?? undefined;
+          const db = openDb();
+          upsertManualItem(db, {
+            uri: result.uri,
+            cid: result.cid ?? null,
+            source: "manual",
+            kind: i === 0 ? "post" : "reply",
+            status: "acted",
+            action: i === 0 ? "posted" : "threaded",
+            note: chunks.length > 1 ? `thread ${i + 1}/${chunks.length}` : "posted via bsky",
+            author_handle: session.handle,
+            author_did: did,
+            text: chunk,
+            created_at: createdAt,
+            indexed_at: createdAt,
+            raw_json: JSON.stringify(result),
+          });
+          db.close();
+          console.log(`thread[${i + 1}/${chunks.length}]:`, result.uri);
+        }
+      }
       break;
     }
 
     case "quote": {
       const quoteUriIdx = args.findIndex((arg) => arg.startsWith("at://"));
       let quoteUri: string | undefined;
-      let quoteCid: string | undefined;
       if (quoteUriIdx !== -1) {
         quoteUri = args[quoteUriIdx];
-        const maybeCid = args[quoteUriIdx + 1];
-        if (maybeCid && maybeCid.startsWith("bafy")) quoteCid = maybeCid;
       }
       if (!quoteUri) {
         throw new Error("quote requires an at:// uri of the post to quote");
       }
       const { session, did, token } = await getAuthedClient();
-      if (!quoteCid) quoteCid = await resolveCid(quoteUri, did);
-      const text = args.filter((arg) => arg !== quoteUri && arg !== quoteCid).join(" ");
+      const quoteCid = await resolveCid(quoteUri, did);
+      const text = args.filter((arg) => arg !== quoteUri).join(" ");
       const facets = await buildFacets(text);
       const createdAt = new Date().toISOString();
       const record: any = {
@@ -289,47 +369,109 @@ try {
       if (!text) throw new Error("reply requires text");
 
       const { session, did, token } = await getAuthedClient();
-      const facets = await buildFacets(text);
-      const refs = await resolveReplyRefs(parentUri, token);
       const createdAt = new Date().toISOString();
-      const record: any = {
-        $type: "app.bsky.feed.post",
-        text,
-        createdAt,
-        langs: ["en"],
-        reply: refs,
-      };
-      if (facets.length > 0) record.facets = facets;
-      const result = await writeRecord("app.bsky.feed.post", record, did, token);
-      await markTrackedAction(
-        parentUri,
-        "replied",
-        "replied via bsky",
-        token,
-        { reply_uri: result.uri, reply_cid: result.cid ?? null },
-      );
-      const db = openDb();
-      upsertManualItem(db, {
-        uri: result.uri,
-        cid: result.cid ?? null,
-        source: "manual",
-        kind: "reply",
-        status: "acted",
-        action: "replied",
-        note: "reply created via bsky",
-        author_handle: session.handle,
-        author_did: did,
-        text,
-        created_at: createdAt,
-        indexed_at: createdAt,
-        parent_uri: refs.parent.uri,
-        thread_root_uri: refs.root.uri,
-        subject_uri: parentUri,
-        subject_cid: refs.parent.cid,
-        raw_json: JSON.stringify(result),
-      });
-      db.close();
-      console.log("replied:", result.uri);
+
+      // Auto-thread: split long replies into chained replies
+      const chunks = splitIntoThreadChunks(text);
+
+      if (chunks.length === 1) {
+        // Short reply — normal path
+        const facets = await buildFacets(chunks[0]);
+        const refs = await resolveReplyRefs(parentUri, token);
+        const record: any = {
+          $type: "app.bsky.feed.post",
+          text: chunks[0],
+          createdAt,
+          langs: ["en"],
+          reply: refs,
+        };
+        if (facets.length > 0) record.facets = facets;
+        const result = await writeRecord("app.bsky.feed.post", record, did, token);
+        await markTrackedAction(
+          parentUri,
+          "replied",
+          "replied via bsky",
+          token,
+          { reply_uri: result.uri, reply_cid: result.cid ?? null },
+        );
+        const db = openDb();
+        upsertManualItem(db, {
+          uri: result.uri,
+          cid: result.cid ?? null,
+          source: "manual",
+          kind: "reply",
+          status: "acted",
+          action: "replied",
+          note: "reply created via bsky",
+          author_handle: session.handle,
+          author_did: did,
+          text: chunks[0],
+          created_at: createdAt,
+          indexed_at: createdAt,
+          parent_uri: refs.parent.uri,
+          thread_root_uri: refs.root.uri,
+          subject_uri: parentUri,
+          subject_cid: refs.parent.cid,
+          raw_json: JSON.stringify(result),
+        });
+        db.close();
+        console.log("replied:", result.uri);
+      } else {
+        // Long reply — thread it
+        const rootRefs = await resolveReplyRefs(parentUri, token);
+        let prevUri: string = parentUri;
+        let prevCid: string = rootRefs.parent.cid;
+
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const facets = await buildFacets(chunk);
+          const record: any = {
+            $type: "app.bsky.feed.post",
+            text: chunk,
+            createdAt,
+            langs: ["en"],
+            reply: {
+              parent: { uri: prevUri, cid: prevCid },
+              root: rootRefs.root,
+            },
+          };
+          if (facets.length > 0) record.facets = facets;
+          const result = await writeRecord("app.bsky.feed.post", record, did, token);
+          if (i === 0) {
+            await markTrackedAction(
+              parentUri,
+              "replied",
+              `threaded reply (${chunks.length} parts)`,
+              token,
+              { reply_uri: result.uri, reply_cid: result.cid ?? null },
+            );
+          }
+          const db = openDb();
+          upsertManualItem(db, {
+            uri: result.uri,
+            cid: result.cid ?? null,
+            source: "manual",
+            kind: "reply",
+            status: "acted",
+            action: i === 0 ? "replied" : "threaded",
+            note: chunks.length > 1 ? `reply thread ${i + 1}/${chunks.length}` : "replied via bsky",
+            author_handle: session.handle,
+            author_did: did,
+            text: chunk,
+            created_at: createdAt,
+            indexed_at: createdAt,
+            parent_uri: i === 0 ? rootRefs.parent.uri : prevUri,
+            thread_root_uri: rootRefs.root.uri,
+            subject_uri: parentUri,
+            subject_cid: rootRefs.parent.cid,
+            raw_json: JSON.stringify(result),
+          });
+          db.close();
+          console.log(`reply-thread[${i + 1}/${chunks.length}]:`, result.uri);
+          prevUri = result.uri;
+          prevCid = result.cid ?? "";
+        }
+      }
       break;
     }
 

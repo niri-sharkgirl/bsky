@@ -22,6 +22,7 @@ export type Action =
   | "posted"
   | "quoted"
   | "replied"
+  | "threaded"
   | "liked"
   | "followed"
   | "dismissed"

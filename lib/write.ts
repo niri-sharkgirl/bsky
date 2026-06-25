@@ -185,6 +185,94 @@ export async function resolveReplyRefs(parentUri: string, token: string) {
   };
 }
 
+const MAX_GRAPHEMES = 300;
+
+/** Count grapheme clusters (not just code units) */
+function graphemeCount(text: string): number {
+  // Intl.Segmenter is available in Deno and handles grapheme clusters correctly
+  try {
+    const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
+    return [...segmenter.segment(text)].length;
+  } catch {
+    // Fallback: spread operator gets most cases right
+    return [...text].length;
+  }
+}
+
+/**
+ * Split text into thread-safe chunks at sentence/paragraph boundaries.
+ * Each chunk is ≤ MAX_GRAPHEMES grapheme clusters.
+ * Prefers splitting on double-newlines (paragraphs), then sentence endings (.!?)
+ */
+export function splitIntoThreadChunks(text: string): string[] {
+  if (graphemeCount(text) <= MAX_GRAPHEMES) return [text];
+
+  const chunks: string[] = [];
+
+  // First, split into paragraphs on double newlines
+  const paragraphs = text.split(/\n\n+/);
+
+  let currentChunk = "";
+
+  for (const para of paragraphs) {
+    // If a single paragraph fits in remaining space, just append it
+    const testChunk = currentChunk ? currentChunk + "\n\n" + para : para;
+    if (graphemeCount(testChunk) <= MAX_GRAPHEMES) {
+      currentChunk = testChunk;
+      continue;
+    }
+
+    // Flush current chunk if we have one
+    if (currentChunk) {
+      chunks.push(currentChunk);
+      currentChunk = "";
+    }
+
+    // If paragraph itself fits, start new chunk with it
+    if (graphemeCount(para) <= MAX_GRAPHEMES) {
+      currentChunk = para;
+      continue;
+    }
+
+    // Paragraph is too long — split on sentence boundaries
+    // Split on sentence endings followed by space or end of string
+    const sentences = para.split(/(?<=[.!?])\s+(?=[A-Z0-9"'\(])/);
+
+    for (const sentence of sentences) {
+      const testSentence = currentChunk ? currentChunk + " " + sentence : sentence;
+      if (graphemeCount(testSentence) <= MAX_GRAPHEMES) {
+        currentChunk = testSentence;
+      } else {
+        // Sentence itself might be too long — hard split needed
+        if (currentChunk) {
+          chunks.push(currentChunk);
+          currentChunk = "";
+        }
+        if (graphemeCount(sentence) <= MAX_GRAPHEMES) {
+          currentChunk = sentence;
+        } else {
+          // Emergency fallback: split on word boundaries
+          const words = sentence.split(" ");
+          for (const word of words) {
+            const testWord = currentChunk ? currentChunk + " " + word : word;
+            if (graphemeCount(testWord) <= MAX_GRAPHEMES) {
+              currentChunk = testWord;
+            } else {
+              if (currentChunk) chunks.push(currentChunk);
+              currentChunk = word;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (currentChunk) chunks.push(currentChunk);
+
+  // Filter out any empty chunks
+  return chunks.filter((c) => c.trim().length > 0);
+}
+
 const CHAT_PROXY = "did:web:api.bsky.chat#bsky_chat";
 
 export async function chatFetch(path: string, token: string, init?: RequestInit) {
