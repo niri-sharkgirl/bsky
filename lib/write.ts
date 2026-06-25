@@ -270,7 +270,24 @@ export function splitIntoThreadChunks(text: string): string[] {
   if (currentChunk) chunks.push(currentChunk);
 
   // Filter out any empty chunks
-  return chunks.filter((c) => c.trim().length > 0);
+  let filtered = chunks.filter((c) => c.trim().length > 0);
+
+  // Post-split cleanup: if a chunk ends with a very short trailing word (under 5 chars)
+  // and the next chunk exists, migrate that short word to the start of the next chunk
+  // to avoid awkward splits like "i\n\nbuilt it"
+  for (let i = 0; i < filtered.length - 1; i++) {
+    const lastSpace = filtered[i].lastIndexOf(" ");
+    if (lastSpace === -1) continue; // single word chunk, nothing to migrate
+    const lastWord = filtered[i].slice(lastSpace + 1);
+    if (graphemeCount(lastWord) >= 5) continue; // long enough to stay
+    const testNext = lastWord + " " + filtered[i + 1];
+    if (graphemeCount(testNext) <= MAX_GRAPHEMES) {
+      filtered[i] = filtered[i].slice(0, lastSpace);
+      filtered[i + 1] = testNext;
+    }
+  }
+
+  return filtered;
 }
 
 const CHAT_PROXY = "did:web:api.bsky.chat#bsky_chat";
