@@ -236,7 +236,7 @@ export function splitIntoThreadChunks(text: string): string[] {
 
     // Paragraph is too long — split on sentence boundaries
     // Split on sentence endings followed by space or end of string
-    const sentences = para.split(/(?<=[.!?])\s+(?=[A-Z0-9"'\(])/);
+    const sentences = para.split(/(?<=[.!?])\s+/);
 
     for (const sentence of sentences) {
       const testSentence = currentChunk ? currentChunk + " " + sentence : sentence;
