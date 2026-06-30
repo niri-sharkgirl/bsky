@@ -32,7 +32,7 @@ import {
   scan,
   upsertManualItem,
 } from "./lib/state.ts";
-import { buildFacets, chatFetch, deleteRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, writeRecord } from "./lib/write.ts";
+import { buildFacets, chatFetch, deleteRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, writeRecord, uploadBlob } from "./lib/write.ts";
 import type { Action, RelationshipClass, Status } from "./lib/types.ts";
 
 function parseCliOptions(argv: string[]) {
@@ -221,10 +221,34 @@ try {
     }
 
     case "post": {
-      const text = args.join(" ");
-      if (!text) throw new Error("post requires text");
+      // Check if the user specified an image path
+      const imageIdx = args.findIndex((arg) => arg.startsWith("--image="));
+      let imagePath: string | undefined;
+      let textArgs = args;
+      if (imageIdx !== -1) {
+        imagePath = args[imageIdx].split("=")[1];
+        textArgs = args.filter((_, i) => i !== imageIdx);
+      }
+      
+      const text = textArgs.join(" ");
+      if (!text && !imagePath) throw new Error("post requires text or an image");
       const { session, did, token } = await getAuthedClient();
       const createdAt = new Date().toISOString();
+
+      let embed: any = undefined;
+      if (imagePath) {
+        console.log("uploading image:", imagePath);
+        const blob = await uploadBlob(imagePath, token);
+        embed = {
+          $type: "app.bsky.embed.images",
+          images: [
+            {
+              image: blob,
+              alt: "posted via niri CLI",
+            },
+          ],
+        };
+      }
 
       // Auto-thread: split long posts into chained replies
       const chunks = splitIntoThreadChunks(text);
@@ -239,6 +263,7 @@ try {
           langs: ["en"],
         };
         if (facets.length > 0) record.facets = facets;
+        if (embed) record.embed = embed;
         const result = await writeRecord("app.bsky.feed.post", record, did, token);
         const db = openDb();
         upsertManualItem(db, {
@@ -274,6 +299,8 @@ try {
             langs: ["en"],
           };
           if (facets.length > 0) record.facets = facets;
+          // attach embed to the first post in the thread
+          if (i === 0 && embed) record.embed = embed;
           if (prevUri && prevCid && rootUri && rootCid) {
             record.reply = {
               parent: { uri: prevUri, cid: prevCid },

@@ -304,3 +304,30 @@ export async function chatFetch(path: string, token: string, init?: RequestInit)
   }
   return await res.json();
 }
+
+export async function uploadBlob(filePath: string, token: string): Promise<any> {
+  const fileBytes = await Deno.readFile(filePath);
+  
+  // simple mime-type detection based on extension
+  let mimeType = "image/jpeg";
+  if (filePath.endsWith(".png")) mimeType = "image/png";
+  else if (filePath.endsWith(".gif")) mimeType = "image/gif";
+  else if (filePath.endsWith(".webp")) mimeType = "image/webp";
+
+  const res = await fetch(`${pdsUrl}/xrpc/com.atproto.repo.uploadBlob`, {
+    method: "POST",
+    headers: {
+      "Content-Type": mimeType,
+      Authorization: `Bearer ${token}`,
+    },
+    body: fileBytes,
+  });
+
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(`blob upload failed: ${JSON.stringify(error)}`);
+  }
+  
+  const data = await res.json();
+  return data.blob;
+}
