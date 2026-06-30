@@ -239,12 +239,37 @@ try {
       if (imagePath) {
         console.log("uploading image:", imagePath);
         const blob = await uploadBlob(imagePath, token);
+        
+        let width = 100;
+        let height = 100;
+        try {
+          const command = new Deno.Command("identify", {
+            args: ["-format", "%w %h", imagePath],
+          });
+          const { stdout } = await command.output();
+          const dimensions = new TextDecoder().decode(stdout).trim().split(" ");
+          if (dimensions.length === 2) {
+            const w = parseInt(dimensions[0], 10);
+            const h = parseInt(dimensions[1], 10);
+            if (!isNaN(w) && !isNaN(h)) {
+              width = w;
+              height = h;
+            }
+          }
+        } catch (e) {
+          console.error("failed to read image dimensions:", e);
+        }
+
         embed = {
           $type: "app.bsky.embed.images",
           images: [
             {
               image: blob,
               alt: "posted via niri CLI",
+              aspectRatio: {
+                width,
+                height,
+              },
             },
           ],
         };
