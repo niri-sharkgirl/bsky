@@ -12,9 +12,16 @@ export function byteOffset(text: string, charIndex: number) {
 export function getEmbedAltText(embed: any): string {
   if (!embed) return "";
   const images = embed.images || embed.media?.images || [];
-  const alts = images.map((image: any) => image.alt).filter(Boolean);
-  if (alts.length > 0) {
-    return "\n[image: " + alts.join("; ") + "]";
+  const lines: string[] = [];
+  
+  if (images.length > 0) {
+    for (const image of images) {
+      // prefer fullsize or thumb view URL if present, otherwise fallback to ref link string if we're dealing with raw record blobs
+      const url = image.fullsize || image.thumb || (image.image?.ref ? `blob:${image.image.ref.$link}` : "");
+      const alt = image.alt ? ` alt: "${image.alt}"` : "";
+      lines.push(`[image:${alt}${url ? " " + url : ""}]`);
+    }
+    return "\n" + lines.join("\n");
   }
   return "";
 }
