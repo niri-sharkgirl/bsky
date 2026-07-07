@@ -230,6 +230,9 @@ try {
         textArgs = args.filter((_, i) => i !== imageIdx);
       }
       
+      // Strip --text= and --alt= flags so they don't leak into post text
+      textArgs = textArgs.filter((arg) => !arg.startsWith("--text=") && !arg.startsWith("--alt="));
+      
       const text = textArgs.join(" ");
       if (!text && !imagePath) throw new Error("post requires text or an image");
       const { session, did, token } = await getAuthedClient();
