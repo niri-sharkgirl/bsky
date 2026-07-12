@@ -237,8 +237,23 @@ try {
       // Strip --dry-run, --text=, --alt= flags so they don't leak into post text
       textArgs = textArgs.filter((arg) => !arg.startsWith("--text=") && !arg.startsWith("--alt=") && arg !== "--dry-run");
       
-      const text = textArgs.join(" ");
-      if (!text && !imagePath) throw new Error("post requires text or an image");
+      // Read from stdin if no text args (pipe support)
+      let text: string;
+      
+      if (textArgs.length > 0) {
+        text = textArgs.join(" ");
+      } else {
+        // Try to read from stdin
+        try {
+          const buf = new Uint8Array(65536);
+          const nread = await Deno.stdin.read(buf);
+          text = nread ? new TextDecoder().decode(buf.subarray(0, nread)).trim() : "";
+        } catch {
+          text = "";
+        }
+      }
+      
+      if (!text && !imagePath) throw new Error("post requires text or an image (or pipe via stdin)");
 
       // Dry-run: show splits and exit
       if (dryRun) {
