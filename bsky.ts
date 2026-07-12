@@ -103,6 +103,13 @@ try {
       const linearIdx = args.indexOf("--linear");
       const linear = linearIdx !== -1;
       if (linear) args.splice(linearIdx, 1);
+      // optional --root <uri> for expected root verification (linear mode only)
+      const rootIdx = args.indexOf("--root");
+      let expectedRoot: string | null = null;
+      if (rootIdx !== -1) {
+        expectedRoot = args[rootIdx + 1] || null;
+        args.splice(rootIdx, expectedRoot ? 2 : 1);
+      }
       let uri = args[0];
       if (!uri) throw new Error("thread requires a post uri or handle rkey");
       // accept "handle rkey" as two args, resolve to at-uri
@@ -121,6 +128,20 @@ try {
       const posts = linear
         ? walkLinearChain(thread.thread)
         : [...walkAncestors(thread.thread), ...flattenThread(thread.thread)];
+      // verify root if --root was provided (linear mode)
+      if (linear && expectedRoot && posts.length > 0) {
+        const actualRoot = posts[0].uri; // root is first element in linear chain (index 0)
+        if (actualRoot !== expectedRoot) {
+          console.error(`WARNING: expected root ${expectedRoot} but chain leads to ${actualRoot}`);
+          console.error(`(chain may be from a different thread or URI may be wrong)`);
+        }
+        // check for depth truncation (API depth=6 cap)
+        const lastNode = (() => { let c: any = thread.thread; while (c?.post) { if (!c.parent?.post) return c; c = c.parent; } return null; })();
+        if (lastNode?.parent?.post && !posts.some(p => p.uri === expectedRoot)) {
+          console.error(`WARNING: chain truncated at API depth limit (6). did not reach expected root.`);
+          console.error(`(increase depth param or use a closer target URI)`);
+        }
+      }
       console.log(JSON.stringify(posts, null, 2));
       break;
     }
