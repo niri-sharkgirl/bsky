@@ -251,17 +251,35 @@ export function splitIntoThreadChunks(text: string): string[] {
         if (graphemeCount(sentence) <= MAX_GRAPHEMES) {
           currentChunk = sentence;
         } else {
-          // Emergency fallback: split on word boundaries
-          const words = sentence.split(" ");
-          for (const word of words) {
-            const testWord = currentChunk ? currentChunk + " " + word : word;
-            if (graphemeCount(testWord) <= MAX_GRAPHEMES) {
-              currentChunk = testWord;
+          // Try clause-boundary splits first (commas, semicolons, before conjunctions)
+          const clauseParts = sentence.split(/(?<=[,;])\s+|(?=\s+(?:and|or|but|yet|for|nor|so|although|because|since|unless|while|whereas)\s)/i);
+
+          let clauseChunk = currentChunk;
+          for (const clause of clauseParts) {
+            const testClause = clauseChunk ? clauseChunk + clause : clause;
+            if (graphemeCount(testClause) <= MAX_GRAPHEMES) {
+              clauseChunk = testClause;
             } else {
-              if (currentChunk) chunks.push(currentChunk);
-              currentChunk = word;
+              // Clause doesn't fit — flush and start new
+              if (clauseChunk && clauseChunk !== currentChunk) {
+                chunks.push(clauseChunk);
+                clauseChunk = clause;
+              } else {
+                // Even a single clause is too big — fall back to word boundaries
+                const words = clause.split(" ");
+                for (const word of words) {
+                  const testWord = clauseChunk ? clauseChunk + " " + word : word;
+                  if (graphemeCount(testWord) <= MAX_GRAPHEMES) {
+                    clauseChunk = testWord;
+                  } else {
+                    if (clauseChunk) chunks.push(clauseChunk);
+                    clauseChunk = word;
+                  }
+                }
+              }
             }
           }
+          currentChunk = clauseChunk;
         }
       }
     }
