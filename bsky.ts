@@ -19,6 +19,7 @@ import {
   printFeedView,
   printNotifView,
   walkAncestors,
+  walkLinearChain,
 } from "./lib/read.ts";
 import {
   cleanupPending,
@@ -99,6 +100,9 @@ try {
     }
 
     case "thread": {
+      const linearIdx = args.indexOf("--linear");
+      const linear = linearIdx !== -1;
+      if (linear) args.splice(linearIdx, 1);
       let uri = args[0];
       if (!uri) throw new Error("thread requires a post uri or handle rkey");
       // accept "handle rkey" as two args, resolve to at-uri
@@ -114,13 +118,10 @@ try {
           params: { uri: uri as ResourceUri, depth: 6 },
         }),
       );
-      console.log(
-        JSON.stringify(
-          [...walkAncestors(thread.thread), ...flattenThread(thread.thread)],
-          null,
-          2,
-        ),
-      );
+      const posts = linear
+        ? walkLinearChain(thread.thread)
+        : [...walkAncestors(thread.thread), ...flattenThread(thread.thread)];
+      console.log(JSON.stringify(posts, null, 2));
       break;
     }
 

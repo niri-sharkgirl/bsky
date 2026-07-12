@@ -74,6 +74,26 @@ export function walkAncestors(thread: any) {
   return out;
 }
 
+export function walkLinearChain(thread: any): any[] {
+  // walk from target post up to root via parent refs, return root→target order
+  const chain: any[] = [];
+  let current: any = thread;
+  while (current?.post) {
+    chain.unshift({
+      author: current.post.author?.handle,
+      text: trunc(
+        (current.post.record?.text || "") + getEmbedAltText(current.post?.embed),
+      ),
+      time: current.post.indexedAt,
+      depth: chain.length,
+      uri: current.post.uri,
+      cid: current.post.cid,
+    });
+    current = current.parent;
+  }
+  return chain;
+}
+
 export function flattenThread(thread: any, depth = 0): any[] {
   const posts: any[] = [{
     author: thread.post?.author?.handle || thread.author?.handle,
