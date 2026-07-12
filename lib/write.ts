@@ -290,14 +290,36 @@ export function splitIntoThreadChunks(text: string): string[] {
   // Filter out any empty chunks
   let filtered = chunks.filter((c) => c.trim().length > 0);
 
-  // Post-split cleanup: if a chunk ends with a very short trailing word (under 5 chars)
-  // and the next chunk exists, migrate that short word to the start of the next chunk
-  // to avoid awkward splits like "i\n\nbuilt it"
+  // Post-split cleanup: migrate dangling words to next chunk
+  // Two triggers for migration:
+  //  1. Word is very short (< 5 graphemes) — length-based catch-all
+  //  2. Word is a pronoun/subject/auxiliary that syntactically belongs with next verb
+  const MIGRATE_WORDS = new Set([
+    // Pronouns
+    "i", "you", "he", "she", "it", "we", "they",
+    "this", "that", "these", "those",
+    // Possessive determiners
+    "my", "your", "his", "her", "its", "our", "their",
+    // Auxiliary / modal verbs
+    "am", "is", "are", "was", "were",
+    "have", "has", "had",
+    "do", "does", "did",
+    "will", "would", "could", "should", "may", "might", "can", "must",
+    // Common dangling prepositions/conjunctions
+    "and", "or", "but", "nor", "yet", "so",
+    "to", "of", "in", "for", "on", "with", "at", "by", "from",
+    "as", "if", "when", "where", "while", "though", "although",
+  ]);
+
   for (let i = 0; i < filtered.length - 1; i++) {
     const lastSpace = filtered[i].lastIndexOf(" ");
     if (lastSpace === -1) continue; // single word chunk, nothing to migrate
     const lastWord = filtered[i].slice(lastSpace + 1);
-    if (graphemeCount(lastWord) >= 5) continue; // long enough to stay
+    
+    // Migrate if it's a known syntactic binder OR if it's very short
+    const shouldMigrate = MIGRATE_WORDS.has(lastWord.toLowerCase()) || graphemeCount(lastWord) < 5;
+    if (!shouldMigrate) continue;
+
     const testNext = lastWord + " " + filtered[i + 1];
     if (graphemeCount(testNext) <= MAX_GRAPHEMES) {
       filtered[i] = filtered[i].slice(0, lastSpace);
