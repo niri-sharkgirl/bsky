@@ -221,6 +221,10 @@ try {
     }
 
     case "post": {
+      // Check for dry-run mode: show what chunks would be generated without posting
+      const dryRun = args.includes("--dry-run");
+      if (dryRun) { /* handled below */ }
+
       // Check if the user specified an image path
       const imageIdx = args.findIndex((arg) => arg.startsWith("--image="));
       let imagePath: string | undefined;
@@ -230,11 +234,26 @@ try {
         textArgs = args.filter((_, i) => i !== imageIdx);
       }
       
-      // Strip --text= and --alt= flags so they don't leak into post text
-      textArgs = textArgs.filter((arg) => !arg.startsWith("--text=") && !arg.startsWith("--alt="));
+      // Strip --dry-run, --text=, --alt= flags so they don't leak into post text
+      textArgs = textArgs.filter((arg) => !arg.startsWith("--text=") && !arg.startsWith("--alt=") && arg !== "--dry-run");
       
       const text = textArgs.join(" ");
       if (!text && !imagePath) throw new Error("post requires text or an image");
+
+      // Dry-run: show splits and exit
+      if (dryRun) {
+        const chunks = splitIntoThreadChunks(text);
+        const seg = new Intl.Segmenter("en", { granularity: "grapheme" });
+        console.log(`\n--- dry-run: ${chunks.length} chunk(s), ${[...seg.segment(text)].length} total graphemes ---\n`);
+        chunks.forEach((c: string, i: number) => {
+          const count = [...seg.segment(c)].length;
+          const bar = "█".repeat(Math.round(count / 300 * 20)) + "░".repeat(20 - Math.round(count / 300 * 20));
+          console.log(`chunk ${i + 1}/${chunks.length} [${count}/300g] ${bar}`);
+          console.log(`${c}\n`);
+        });
+        Deno.exit(0);
+      }
+
       const { session, did, token } = await getAuthedClient();
       const createdAt = new Date().toISOString();
 
