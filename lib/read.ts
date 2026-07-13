@@ -91,6 +91,10 @@ export function walkLinearChain(thread: any): any[] {
     });
     current = current.parent;
   }
+  // flip depth so 0 = root (OP), increasing toward target
+  for (let i = 0; i < chain.length; i++) {
+    chain[i].depth = i;
+  }
   return chain;
 }
 
