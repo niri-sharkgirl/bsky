@@ -46,8 +46,34 @@ function parseCliOptions(argv: string[]) {
   return { jsonFlag, limit, args };
 }
 
-const [cmd, ...rest] = Deno.args;
+const [rawCmd, ...rest] = Deno.args;
 const { jsonFlag, limit, args } = parseCliOptions(rest);
+
+// Intercept `post --reply-to <uri> <text>` and rewrite to `reply <uri> <text>`
+// Fixes recurring flag leak where --reply-to gets posted as literal text
+let cmd = rawCmd;
+if (cmd === "post") {
+  const replyToIdx = args.findIndex((arg) => arg === "--reply-to" || arg.startsWith("--reply-to="));
+  if (replyToIdx !== -1) {
+    const replyUri = args[replyToIdx].includes("=")
+      ? args[replyToIdx].split("=")[1]
+      : args[replyToIdx + 1];
+    if (replyUri && replyUri.startsWith("at://")) {
+      const cleanedArgs = args.filter((_, i) => {
+        if (i === replyToIdx) return false;
+        if (!args[replyToIdx].includes("=") && i === replyToIdx + 1) return false;
+        const arg = args[i];
+        if (arg === "--reply-root" || arg.startsWith("--reply-root=")) return false;
+        if (arg.startsWith("--")) return false; // strip any other stray flags
+        return true;
+      });
+      args.length = 0;
+      args.push(replyUri, ...cleanedArgs);
+      cmd = "reply";
+      console.log("auto-routed post --reply-to to reply (tip: use 'reply' directly next time)");
+    }
+  }
+}
 
 try {
   switch (cmd) {
@@ -257,7 +283,8 @@ try {
       }
       
       // Strip --dry-run, --text=, --alt= flags so they don't leak into post text
-      textArgs = textArgs.filter((arg) => !arg.startsWith("--text=") && !arg.startsWith("--alt=") && arg !== "--dry-run");
+      // Safety net: also strip any other -- prefixed args (recurring flag leak bug)
+      textArgs = textArgs.filter((arg) => !arg.startsWith("--"));
       
       // Read from stdin if no text args (pipe support)
       let text: string;
