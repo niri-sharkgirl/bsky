@@ -127,9 +127,12 @@ try {
 
     case "thread": {
       const linearIdx = args.indexOf("--linear");
-      const linear = linearIdx !== -1;
-      if (linear) args.splice(linearIdx, 1);
-      // optional --root <uri> for expected root verification (linear mode only)
+      // A targeted post is safest read as its root→target ancestry chain.
+      // `--root` implies that mode, so the expected origin is visibly checked.
+      const rootFlagPresent = args.indexOf("--root") !== -1;
+      const linear = linearIdx !== -1 || rootFlagPresent;
+      if (linearIdx !== -1) args.splice(linearIdx, 1);
+      // optional --root <uri> for expected root verification (also enables linear mode)
       const rootIdx = args.indexOf("--root");
       let expectedRoot: string | null = null;
       if (rootIdx !== -1) {
