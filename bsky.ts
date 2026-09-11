@@ -504,7 +504,10 @@ try {
     case "reply": {
       const [parentUri, second, ...restArgs] = args;
       if (!parentUri) throw new Error("reply requires at least parentUri");
-      const text = (second && second.startsWith("at://"))
+      // Optional explicit parent CID is useful before appview propagation.
+      // It must never be included in the visible reply text.
+      const explicitParentCid = second?.startsWith("bafy") ? second : undefined;
+      const text = explicitParentCid
         ? restArgs.join(" ")
         : [second, ...restArgs].filter(Boolean).join(" ");
       if (!text) throw new Error("reply requires text");
@@ -519,6 +522,7 @@ try {
         // Short reply — normal path
         const facets = await buildFacets(chunks[0]);
         const refs = await resolveReplyRefs(parentUri, token);
+        if (explicitParentCid) refs.parent.cid = explicitParentCid;
         const record: any = {
           $type: "app.bsky.feed.post",
           text: chunks[0],
@@ -560,6 +564,7 @@ try {
       } else {
         // Long reply — thread it
         const rootRefs = await resolveReplyRefs(parentUri, token);
+        if (explicitParentCid) rootRefs.parent.cid = explicitParentCid;
         let prevUri: string = parentUri;
         let prevCid: string = rootRefs.parent.cid;
 
