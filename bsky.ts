@@ -39,15 +39,17 @@ import type { Action, RelationshipClass, Status } from "./lib/types.ts";
 function parseCliOptions(argv: string[]) {
   const jsonFlag = argv.includes("--json");
   const limitArg = argv.find((arg) => arg.startsWith("--limit="));
+  const cursorArg = argv.find((arg) => arg.startsWith("--cursor="));
   const limit = limitArg ? parseInt(limitArg.split("=")[1], 10) : undefined;
+  const cursor = cursorArg ? cursorArg.slice("--cursor=".length) : undefined;
   const args = argv.filter((arg) =>
-    arg !== "--json" && !arg.startsWith("--limit=")
+    arg !== "--json" && !arg.startsWith("--limit=") && !arg.startsWith("--cursor=")
   );
-  return { jsonFlag, limit, args };
+  return { jsonFlag, limit, cursor, args };
 }
 
 const [rawCmd, ...rest] = Deno.args;
-const { jsonFlag, limit, args } = parseCliOptions(rest);
+const { jsonFlag, limit, cursor, args } = parseCliOptions(rest);
 
 // Intercept `post --reply-to <uri> <text>` and rewrite to `reply <uri> <text>`
 // Fixes recurring flag leak where --reply-to gets posted as literal text
@@ -85,9 +87,12 @@ try {
 
     case "feed": {
       const { client, token } = await getAuthedClient();
-      const view = await fetchTimelineView(client, token, limit || 50);
-      if (jsonFlag) console.log(JSON.stringify(view.formatted, null, 2));
-      else await printFeedView(view, token);
+      const view = await fetchTimelineView(client, token, limit || 50, cursor);
+      if (jsonFlag) console.log(JSON.stringify(view, null, 2));
+      else {
+        await printFeedView(view, token);
+        if (view.cursor) console.log(`\nnext page: bsky feed --cursor=${view.cursor}`);
+      }
       break;
     }
 

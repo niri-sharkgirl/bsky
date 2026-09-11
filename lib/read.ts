@@ -223,15 +223,17 @@ export async function fetchTimelineView(
   client: Client,
   token: string,
   limit: number,
+  cursor?: string,
 ) {
   const timeline = await ok(
     client.get("app.bsky.feed.getTimeline", {
-      params: { limit },
+      params: { limit, ...(cursor ? { cursor } : {}) },
     }),
   );
   const replyMap = await hydrateReplyContext(timeline.feed, token);
   return {
     raw: timeline.feed,
+    cursor: timeline.cursor || null,
     formatted: timeline.feed.map((item: any) => {
       const reply = item.post?.record?.reply;
       return formatPost(
