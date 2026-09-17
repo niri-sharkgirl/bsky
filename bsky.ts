@@ -180,6 +180,68 @@ try {
       break;
     }
 
+    case "thread-range": {
+      // read the contiguous path between two posts on one ancestor chain.
+      // both orders are accepted: if neither uri is an ancestor of the other,
+      // the range does not exist and we say so instead of guessing.
+      const [startArg, endArg] = args;
+      if (!startArg || !endArg) {
+        throw new Error(
+          "thread-range requires start-uri and end-uri (at:// post uris, or bsky.app post links)",
+        );
+      }
+      const asPostUri = async (raw: string, label: string): Promise<string> => {
+        if (raw.startsWith("at://")) {
+          const parts = raw.split("/");
+          const authority = parts[2];
+          if (!authority) throw new Error(`${label} is not a valid at-uri`);
+          if (!authority.startsWith("did:")) {
+            const did = await resolveHandle(authority);
+            return `at://${did}/${parts.slice(3).join("/")}`;
+          }
+          return raw;
+        }
+        const link = raw.match(
+          /^https?:\/\/(?:www\.)?bsky\.app\/profile\/([^/]+)\/post\/([^/?#]+)/,
+        );
+        if (link) {
+          const actor = link[1];
+          const did = actor.startsWith("did:") ? actor : await resolveHandle(actor);
+          return `at://${did}/app.bsky.feed.post/${link[2]}`;
+        }
+        throw new Error(`${label} must be an at:// post uri or a bsky.app post link`);
+      };
+      const startUri = await asPostUri(startArg, "start");
+      const endUri = await asPostUri(endArg, "end");
+      if (startUri === endUri) throw new Error("start and end are the same post");
+      const { client } = await getAuthedClient();
+      const chainTo = async (uri: string) => {
+        const fetched = await ok(
+          client.get("app.bsky.feed.getPostThread", {
+            params: { uri: uri as ResourceUri, depth: 6 },
+          }),
+        );
+        return walkLinearChain(fetched.thread);
+      };
+      let path = await chainTo(endUri);
+      let startIdx = path.findIndex((p) => p.uri === startUri);
+      if (startIdx === -1) {
+        const otherPath = await chainTo(startUri);
+        const endIdx = otherPath.findIndex((p) => p.uri === endUri);
+        if (endIdx === -1) {
+          throw new Error(
+            "those two posts are not on one ancestor chain (neither is an ancestor of the other)",
+          );
+        }
+        console.error("(start/end were given in reverse order - reading from the earlier post)");
+        path = otherPath;
+        startIdx = endIdx;
+      }
+      const range = path.slice(startIdx).map((p, i) => ({ ...p, depth: i }));
+      console.log(JSON.stringify(range, null, 2));
+      break;
+    }
+
     case "get-post": {
       let uri = args[0];
       if (!uri) throw new Error("get-post requires a post uri or handle rkey");
@@ -946,7 +1008,7 @@ try {
     default:
       console.error("usage: bsky.ts <command> [args...] [--json] [--limit=N]");
       console.error(
-        "commands: check, feed, user-feed, custom-feed, notif, thread, profile, set-bio, follow, post, quote, reply, like, like-n, reply-n, cached, cached-search, delete",
+        "commands: check, feed, user-feed, custom-feed, notif, thread, thread-range, get-post, profile, set-bio, follow, post, quote, reply, like, like-n, reply-n, cached, cached-search, delete",
       );
       console.error("  dm-list, dm-messages, dm-send, dm-reply");
       console.error(
