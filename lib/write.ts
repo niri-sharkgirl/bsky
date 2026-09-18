@@ -252,7 +252,7 @@ export function splitIntoThreadChunks(text: string): string[] {
           currentChunk = sentence;
         } else {
           // Try clause-boundary splits first (commas, semicolons, before conjunctions)
-          const clauseParts = sentence.split(/(?<=[,;])\s+|(?=\s+(?:and|or|but|yet|for|nor|so|although|because|since|unless|while|whereas)\s)/i);
+          const clauseParts = sentence.split(/(?<=[,;])(?=\s)|(?=\s+(?:and|or|but|yet|for|nor|so|although|because|since|unless|while|whereas)\s)/i);
 
           let clauseChunk = currentChunk;
           for (const clause of clauseParts) {
