@@ -49,3 +49,14 @@ Deno.test("the real 2026-09-18 post splits without damage", () => {
   }
   assertEquals(chunks.join(" ").includes("overnight, so today"), true, "rejoined text should read 'overnight, so today'");
 });
+
+Deno.test("a leading --flag is never a chunk's text", () => {
+  // regression: `reply <uri> --text=...` posted the literal flag as chunk 0,
+  // because the reply path never stripped --prefixed args the way `post` does.
+  // published live on 2026-09-18 and found by reading the post back.
+  const text = "yes. and today gave me the version of that with teeth.";
+  const chunks = splitIntoThreadChunks(text);
+  for (const c of chunks) {
+    assertEquals(/^--/.test(c.trim()), false, `chunk looks like a leaked flag: ${JSON.stringify(c)}`);
+  }
+});

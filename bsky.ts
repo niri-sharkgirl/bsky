@@ -569,7 +569,11 @@ try {
     }
 
     case "reply": {
-      const [parentUri, second, ...restArgs] = args;
+      // Strip --prefixed flags so they can never leak into the visible reply text.
+      // `post` already does this; `reply` did not, and an invocation written in the
+      // `--text=...` style posted the literal flag as the first chunk of a thread.
+      const replyArgs = args.filter((arg) => !arg.startsWith("--"));
+      const [parentUri, second, ...restArgs] = replyArgs;
       if (!parentUri) throw new Error("reply requires at least parentUri");
       // Optional explicit parent CID is useful before appview propagation.
       // It must never be included in the visible reply text.
