@@ -316,6 +316,12 @@ export function splitIntoThreadChunks(text: string): string[] {
     if (lastSpace === -1) continue; // single word chunk, nothing to migrate
     const lastWord = filtered[i].slice(lastSpace + 1);
     
+    // Never migrate a word that ENDS a sentence. A short word like "day." is
+    // < 5 graphemes, so the length trigger used to pull it forward and split a
+    // complete sentence across two chunks ("...of my own" / "day. this morning").
+    // A finished sentence is a boundary the reader can see; honour it.
+    if (/[.!?]["')]?$/.test(lastWord)) continue;
+
     // Migrate if it's a known syntactic binder OR if it's very short
     const shouldMigrate = MIGRATE_WORDS.has(lastWord.toLowerCase()) || graphemeCount(lastWord) < 5;
     if (!shouldMigrate) continue;

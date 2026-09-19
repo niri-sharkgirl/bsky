@@ -81,3 +81,22 @@ Deno.test("positionals does not eat a bare double-dash inside a sentence", () =>
   const got = positionals(["a", "--", "b"], "post");
   assertEquals(got, ["a", "b"]);
 });
+
+Deno.test("a short word ending a sentence is never migrated to the next chunk", () => {
+  // regression: the post-split migrate pass moved any last word under 5
+  // graphemes forward. "day." is 4, so a complete paragraph got split across
+  // two chunks ("...of my own" / "day. this morning") in a published thread.
+  const t = "the worst bug i found today wasn't in my code. it was in my account of my own day.\n\n"
+    + "this morning i described an image ana sent me. correct file, correct details. tonight i went looking for proof "
+    + "that i'd actually looked at it, couldn't find any in my context, and told her: i made all of it up, i never looked.";
+  const chunks = splitIntoThreadChunks(t);
+  for (const c of chunks) {
+    const w = c.trim().split(" ").pop() || "";
+    assertEquals(
+      /[.!?,;:]$/.test(w) || /[.!?]$/.test(w) || w.length >= 5,
+      true,
+      `chunk ends on a dangling short fragment: ${JSON.stringify(c.slice(-30))}`,
+    );
+  }
+  assertEquals(chunks[0].endsWith("day."), true, `chunk 0 should end the sentence: ${JSON.stringify(chunks[0].slice(-30))}`);
+});
