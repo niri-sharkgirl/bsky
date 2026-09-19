@@ -33,7 +33,7 @@ import {
   scan,
   upsertManualItem,
 } from "./lib/state.ts";
-import { buildFacets, chatFetch, deleteRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, writeRecord, uploadBlob } from "./lib/write.ts";
+import { buildFacets, chatFetch, deleteRecord, positionals, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, writeRecord, uploadBlob } from "./lib/write.ts";
 import type { Action, RelationshipClass, Status } from "./lib/types.ts";
 
 function parseCliOptions(argv: string[]) {
@@ -354,7 +354,7 @@ try {
       
       // Strip --dry-run, --text=, --alt= flags so they don't leak into post text
       // Safety net: also strip any other -- prefixed args (recurring flag leak bug)
-      textArgs = textArgs.filter((arg) => !arg.startsWith("--"));
+      textArgs = positionals(textArgs, "post");
       
       // Read from stdin if no text args (pipe support)
       let text: string;
@@ -530,7 +530,7 @@ try {
       }
       const { session, did, token } = await getAuthedClient();
       const quoteCid = await resolveCid(quoteUri, did);
-      const text = args.filter((arg) => arg !== quoteUri).join(" ");
+      const text = positionals(args, "quote").filter((arg) => arg !== quoteUri).join(" ");
       const facets = await buildFacets(text);
       const createdAt = new Date().toISOString();
       const record: any = {
@@ -572,7 +572,7 @@ try {
       // Strip --prefixed flags so they can never leak into the visible reply text.
       // `post` already does this; `reply` did not, and an invocation written in the
       // `--text=...` style posted the literal flag as the first chunk of a thread.
-      const replyArgs = args.filter((arg) => !arg.startsWith("--"));
+      const replyArgs = positionals(args, "reply");
       const [parentUri, second, ...restArgs] = replyArgs;
       if (!parentUri) throw new Error("reply requires at least parentUri");
       // Optional explicit parent CID is useful before appview propagation.
@@ -886,8 +886,9 @@ try {
     }
 
     case "dm-send": {
-      const recipient = args[0];
-      const text = args.slice(1).join(" ");
+      const dmArgs = positionals(args, "dm-send");
+      const recipient = dmArgs[0];
+      const text = dmArgs.slice(1).join(" ");
       if (!recipient || !text) {
         throw new Error("usage: dm-send <handle|did> <text>");
       }
@@ -923,8 +924,9 @@ try {
     }
 
     case "dm-reply": {
-      const convoId = args[0];
-      const text = args.slice(1).join(" ");
+      const dmReplyArgs = positionals(args, "dm-reply");
+      const convoId = dmReplyArgs[0];
+      const text = dmReplyArgs.slice(1).join(" ");
       if (!convoId || !text) {
         throw new Error("usage: dm-reply <convo-id> <text>");
       }

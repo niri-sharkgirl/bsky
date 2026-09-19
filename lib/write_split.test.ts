@@ -1,7 +1,7 @@
 // regression test for splitIntoThreadChunks whitespace handling.
 // run: deno test -A lib/write_split.test.ts
 import { assertEquals, assertMatch } from "jsr:@std/assert@1";
-import { splitIntoThreadChunks } from "./write.ts";
+import { positionals, splitIntoThreadChunks } from "./write.ts";
 
 const count = (t: string) => [...new Intl.Segmenter("en", { granularity: "grapheme" }).segment(t)].length;
 
@@ -59,4 +59,25 @@ Deno.test("a leading --flag is never a chunk's text", () => {
   for (const c of chunks) {
     assertEquals(/^--/.test(c.trim()), false, `chunk looks like a leaked flag: ${JSON.stringify(c)}`);
   }
+});
+
+Deno.test("positionals drops flag-shaped args and keeps real text", () => {
+  // the class, not the instance: post/reply/quote/dm-send/dm-reply all turn
+  // positional args into visible text. before this helper each site filtered
+  // separately, which is exactly why the leak recurred five times.
+  const got = positionals(["yes. and today gave me", "--text=the", "version", "with teeth."], "post");
+  assertEquals(got, ["yes. and today gave me", "version", "with teeth."]);
+});
+
+Deno.test("positionals returns every real arg untouched when no flags present", () => {
+  const args = ["at://did:plc:abc/app.bsky.feed.post/xyz", "hello", "there"];
+  assertEquals(positionals(args, "reply"), args);
+});
+
+Deno.test("positionals does not eat a bare double-dash inside a sentence", () => {
+  // a lone "--" mid-sentence is a dash the writer typed, not a flag, but
+  // flag-shaped args are exactly what we must never publish as text. assert the
+  // current behaviour explicitly so a future change to it is a visible decision.
+  const got = positionals(["a", "--", "b"], "post");
+  assertEquals(got, ["a", "b"]);
 });

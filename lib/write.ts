@@ -330,6 +330,25 @@ export function splitIntoThreadChunks(text: string): string[] {
   return filtered;
 }
 
+// --- flag leakage guard (2026-09-18) ---------------------------------------
+// Per-call-site `args.filter(a => !a.startsWith("--"))` is how this bug kept
+// recurring: `post` had it, `reply` didn't, then `quote`/`dm-send`/`dm-reply`
+// didn't either. One leaked flag published the literal string `--text=...` as
+// post text while the tool printed success. Centralising it so a new command
+// cannot silently inherit the hole -- and so a leak is LOUD rather than visible
+// only to a reader who happens to notice.
+export function positionals(args: string[], command: string): string[] {
+  const leaked = args.filter((arg) => arg.startsWith("--"));
+  if (leaked.length > 0) {
+    console.error(
+      `[warn] ${command}: dropped flag-shaped argument(s) from text: ${
+        leaked.map((a) => JSON.stringify(a)).join(", ")
+      }`,
+    );
+  }
+  return args.filter((arg) => !arg.startsWith("--"));
+}
+
 const CHAT_PROXY = "did:web:api.bsky.chat#bsky_chat";
 
 export async function chatFetch(path: string, token: string, init?: RequestInit) {
