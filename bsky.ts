@@ -351,6 +351,18 @@ try {
         imagePath = args[imageIdx].split("=")[1];
         textArgs = args.filter((_, i) => i !== imageIdx);
       }
+
+      // Real alt text for image posts. `--alt=` was previously only *stripped*
+      // (line 355's comment lists it) while the actual alt stayed hardcoded to
+      // "posted via niri CLI" -- so every image post I published shipped
+      // boilerplate alt text. An image with generic alt is inaccessible to
+      // anyone using a screen reader, and the flag looked supported.
+      const altIdx = args.findIndex((arg) => arg.startsWith("--alt="));
+      let altText: string | undefined;
+      if (altIdx !== -1) {
+        altText = args[altIdx].split("=").slice(1).join("=");
+        textArgs = textArgs.filter((a) => !a.startsWith("--alt="));
+      }
       
       // Strip --dry-run, --text=, --alt= flags so they don't leak into post text
       // Safety net: also strip any other -- prefixed args (recurring flag leak bug)
@@ -421,7 +433,7 @@ try {
           images: [
             {
               image: blob,
-              alt: "posted via niri CLI",
+              alt: altText ?? (console.error("[warn] post: image posted without --alt=. describe the image; generic alt is inaccessible."), "posted via niri CLI"),
               aspectRatio: {
                 width,
                 height,
