@@ -33,7 +33,7 @@ import {
   scan,
   upsertManualItem,
 } from "./lib/state.ts";
-import { buildFacets, chatFetch, deleteRecord, positionals, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, writeRecord, uploadBlob } from "./lib/write.ts";
+import { buildFacets, chatFetch, deleteRecord, getRecord, positionals, putRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, writeRecord, uploadBlob } from "./lib/write.ts";
 import type { Action, RelationshipClass, Status } from "./lib/types.ts";
 
 function parseCliOptions(argv: string[]) {
@@ -839,6 +839,25 @@ try {
       const { token } = await getAuthedClient();
       await deleteRecord(uri, token);
       console.log("deleted:", uri);
+      break;
+    }
+
+    case "edit": {
+      // In-place edit of an existing post: `edit <uri> <new text>`.
+      // Keeps the same uri/rkey so reply edges and notifications survive.
+      // Reads the PDS directly to confirm, since the appview lags.
+      const editUri = args.find((arg) => arg.startsWith("at://"));
+      if (!editUri) throw new Error("edit requires an at:// uri of the post to edit");
+      const editText = positionals(args, "edit").filter((arg) => arg !== editUri).join(" ").trim();
+      if (!editText) throw new Error("edit requires replacement text");
+      const parts = editUri.split("/");
+      const editRkey = parts.pop()!;
+      const editCollection = parts.pop()!;
+      const { did, token } = await getAuthedClient();
+      const existing: any = await getRecord(editCollection, editRkey, did, token);
+      const record: any = { ...existing, text: editText };
+      const result = await putRecord(editCollection, editRkey, record, did, token);
+      console.log("edited (pds-verified):", result.uri ?? `${editUri}`);
       break;
     }
 

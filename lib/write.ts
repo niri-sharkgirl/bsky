@@ -52,6 +52,58 @@ export async function writeRecord(
   return data;
 }
 
+// In-place edit of an existing post record, preserving its uri/rkey.
+// Same uri means reply edges stay attached and nobody's notification or like
+// breaks. Used 2026-09-18 when a published thread chunk had broken text.
+export async function putRecord(
+  collection: string,
+  rkey: string,
+  record: any,
+  did: string,
+  token: string,
+) {
+  const res = await fetch(`${pdsUrl}/xrpc/com.atproto.repo.putRecord`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ repo: did, collection, rkey, record }),
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: res.statusText }));
+    throw new Error(`put failed: ${JSON.stringify(error)}`);
+  }
+  const data = await res.json();
+  // PDS is authoritative. The appview lags, so verify against the PDS directly
+  // rather than reading back through get-post (which reads the appview).
+  const check = await fetch(
+    `${pdsUrl}/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=${collection}&rkey=${rkey}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!check.ok) throw new Error("put verification failed: record not found");
+  const verified = await check.json();
+  if (verified.value?.text !== record.text) {
+    throw new Error(`put verification failed: pds text is ${JSON.stringify(String(verified.value?.text).slice(0,60))}`);
+  }
+  return data;
+}
+
+// Read a record straight from the PDS (not the appview, which lags).
+export async function getRecord(
+  collection: string,
+  rkey: string,
+  did: string,
+  token: string,
+) {
+  const res = await fetch(
+    `${pdsUrl}/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=${collection}&rkey=${rkey}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!res.ok) throw new Error(`getRecord failed: ${await res.text()}`);
+  return (await res.json()).value;
+}
+
 export async function deleteRecord(uri: string, token: string) {
   const [, repo, collection, rkey] = uri.match(/at:\/\/(.+)\/(.+)\/(.+)/) || [];
   if (!repo) throw new Error("invalid uri");
