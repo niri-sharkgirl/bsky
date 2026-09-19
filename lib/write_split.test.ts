@@ -1,7 +1,7 @@
 // regression test for splitIntoThreadChunks whitespace handling.
 // run: deno test -A lib/write_split.test.ts
 import { assertEquals, assertMatch } from "jsr:@std/assert@1";
-import { positionals, splitIntoThreadChunks } from "./write.ts";
+import { hardSplitGraphemes, positionals, splitIntoThreadChunks } from "./write.ts";
 
 const count = (t: string) => [...new Intl.Segmenter("en", { granularity: "grapheme" }).segment(t)].length;
 
@@ -99,4 +99,40 @@ Deno.test("a short word ending a sentence is never migrated to the next chunk", 
     );
   }
   assertEquals(chunks[0].endsWith("day."), true, `chunk 0 should end the sentence: ${JSON.stringify(chunks[0].slice(-30))}`);
+});
+
+Deno.test("spaceless runs are hard-split on grapheme boundaries", () => {
+  // A single "word" with no spaces cannot be split at a space, so before this
+  // fix splitIntoThreadChunks emitted it whole and bluesky rejected the post
+  // (app.bsky.feed.post.text allows maxGraphemes 300).
+  const cases: [string, string][] = [
+    ["cjk", "\u4e2d\u6587".repeat(200)],
+    ["repeat", "z".repeat(900)],
+    ["url", "https://example.com/" + "a".repeat(350)],
+  ];
+  for (const [name, text] of cases) {
+    const chunks = splitIntoThreadChunks(text);
+    for (const c of chunks) {
+      if (count(c) > 300) throw new Error(`${name}: chunk of ${count(c)} graphemes exceeds 300`);
+    }
+    // no characters invented and none dropped
+    if (chunks.join("") !== text) throw new Error(`${name}: split was lossy`);
+  }
+});
+
+Deno.test("a run of exactly 300 graphemes stays one chunk", () => {
+  assertEquals(splitIntoThreadChunks("z".repeat(300)).length, 1);
+});
+
+Deno.test("hardSplitGraphemes never splits inside a grapheme cluster", () => {
+  // family emoji is one grapheme cluster made of 7 code points; a code-point
+  // split would produce fragments that render as separate people.
+  const family = "\u{1F469}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
+  const pieces = hardSplitGraphemes(family.repeat(5), 2);
+  for (const p of pieces) {
+    if (!family.repeat(2).startsWith(p) && p !== family) {
+      throw new Error(`split inside a grapheme cluster: ${JSON.stringify(p)}`);
+    }
+  }
+  assertEquals(pieces.join(""), family.repeat(5));
 });

@@ -252,6 +252,30 @@ function graphemeCount(text: string): number {
 }
 
 /**
+ * Cut a spaceless run (URL, CJK text) into pieces of at most `size` grapheme
+ * clusters. Bluesky enforces maxGraphemes, so counting UTF-16 units or code
+ * points here would still produce rejected posts.
+ */
+export function hardSplitGraphemes(text: string, size: number): string[] {
+  if (size < 1) throw new Error("hardSplitGraphemes size must be >= 1");
+  const segmenter = new Intl.Segmenter();
+  const pieces: string[] = [];
+  let current = "";
+  let count = 0;
+  for (const { segment } of segmenter.segment(text)) {
+    if (count + 1 > size) {
+      pieces.push(current);
+      current = "";
+      count = 0;
+    }
+    current += segment;
+    count += 1;
+  }
+  if (current) pieces.push(current);
+  return pieces;
+}
+
+/**
  * Split text into thread-safe chunks at sentence/paragraph boundaries.
  * Each chunk is ≤ MAX_GRAPHEMES grapheme clusters.
  * Prefers splitting on double-newlines (paragraphs), then sentence endings (.!?)
@@ -323,6 +347,15 @@ export function splitIntoThreadChunks(text: string): string[] {
                   const testWord = clauseChunk ? clauseChunk + " " + word : word;
                   if (graphemeCount(testWord) <= MAX_GRAPHEMES) {
                     clauseChunk = testWord;
+                  } else if (graphemeCount(word) > MAX_GRAPHEMES) {
+                    // A single "word" with no spaces (long URL, CJK run) can
+                    // itself exceed the limit; it must be cut on grapheme
+                    // boundaries or the post is rejected outright.
+                    if (clauseChunk) chunks.push(clauseChunk);
+                    clauseChunk = "";
+                    for (const piece of hardSplitGraphemes(word, MAX_GRAPHEMES)) {
+                      chunks.push(piece);
+                    }
                   } else {
                     if (clauseChunk) chunks.push(clauseChunk);
                     clauseChunk = word;
