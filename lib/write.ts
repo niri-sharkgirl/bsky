@@ -481,3 +481,50 @@ export async function uploadBlob(filePath: string, token: string): Promise<any> 
   const data = await res.json();
   return data.blob;
 }
+
+/**
+ * Normalize any of the shapes a person might actually paste into one at-uri.
+ *
+ *   at://did:plc:.../app.bsky.feed.post/<rkey>            -> as-is
+ *   https://bsky.app/profile/<handle|did>/post/<rkey>    -> converted
+ *   <handle|did> <rkey>                                  -> converted
+ *   <rkey>                                               -> against ownDid
+ *
+ * The last two are the forms that actually arrive in hand: a link copied out of
+ * a browser, and a bare rkey read off a notification. Neither is a resource uri,
+ * so a tool that only accepts at:// makes the caller improvise -- and the
+ * improvisation is what published `post get <rkey>` as post text.
+ */
+export async function toAtUri(
+  input: string,
+  maybeRkey: string | undefined,
+  ownDid: string,
+  collection = "app.bsky.feed.post",
+): Promise<string> {
+  const clean = input.trim().replace(/[)>\],.;"'']+$/, "");
+
+  if (clean.startsWith("at://")) return clean;
+
+  const web = clean.match(
+    /^https?:\/\/bsky\.app\/profile\/([^/]+)\/post\/([^/?#]+)/,
+  );
+  if (web) {
+    const repo = await resolveHandle(decodeURIComponent(web[1]));
+    return `at://${repo}/${collection}/${web[2]}`;
+  }
+
+  if (maybeRkey) {
+    const repo = await resolveHandle(clean);
+    return `at://${repo}/${collection}/${maybeRkey}`;
+  }
+
+  // A bare rkey is only unambiguous against our own repo.
+  if (/^[a-z0-9]{10,}$/i.test(clean)) {
+    return `at://${ownDid}/${collection}/${clean}`;
+  }
+
+  throw new Error(
+    `could not read a post reference from ${JSON.stringify(input)} -- ` +
+      `expected an at:// uri, a bsky.app link, "<handle> <rkey>", or a bare rkey`,
+  );
+}

@@ -33,7 +33,7 @@ import {
   scan,
   upsertManualItem,
 } from "./lib/state.ts";
-import { buildFacets, chatFetch, deleteRecord, getRecord, positionals, putRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, writeRecord, uploadBlob } from "./lib/write.ts";
+import { buildFacets, chatFetch, deleteRecord, getRecord, positionals, putRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, toAtUri, writeRecord, uploadBlob } from "./lib/write.ts";
 import type { Action, RelationshipClass, Status } from "./lib/types.ts";
 
 function parseCliOptions(argv: string[]) {
@@ -53,7 +53,39 @@ const { jsonFlag, limit, cursor, args } = parseCliOptions(rest);
 
 // Intercept `post --reply-to <uri> <text>` and rewrite to `reply <uri> <text>`
 // Fixes recurring flag leak where --reply-to gets posted as literal text
+// Verbs the CLI accepts. Used to catch the one mistake shape that has actually
+// published junk: `post <verb> <ref>` -- e.g. `post get <rkey>`, where `post` is
+// not a namespace and the verb became the post body. `post` DOES take positional
+// text (`post "hello"`), so this cannot be a blanket ban; it fires only when the
+// first positional is a known command name, which is never how post text starts.
+const KNOWN_COMMANDS = new Set([
+  "check", "feed", "user-feed", "custom-feed", "notif", "notifications", "thread",
+  "thread-range", "get-post", "profile", "set-bio", "follow", "post", "quote",
+  "reply", "like", "like-n", "reply-n", "delete", "edit", "dm-list", "dm-messages",
+  "dm-send", "dm-reply", "scan", "pending", "ambient", "ambient-short", "heartbeat",
+  "cleanup-pending", "reclassify", "add", "seed-relationships", "relationships",
+  "mark", "cached", "cached-search",
+]);
+
 let cmd = rawCmd;
+if (cmd === "post") {
+  const first = args.find((a) => !a.startsWith("--"));
+
+  // Muscle memory: `post get <ref>` means get-post.
+  if (first === "get" && args.length > 1) {
+    const kept = args.filter((a) => a !== "get");
+    args.length = 0;
+    args.push(...kept);
+    cmd = "get-post";
+    console.error("[note] `post get` -> `get-post`");
+  } else if (first && KNOWN_COMMANDS.has(first)) {
+    throw new Error(
+      `\`post ${first} ...\` is not a command -- \`${first}\` was about to be published as post text. ` +
+        `did you mean to run \`bsky.ts ${first} ...\`? ` +
+        `(to post the literal word, use --text= or pipe it in on stdin)`,
+    );
+  }
+}
 if (cmd === "post") {
   const replyToIdx = args.findIndex((arg) => arg === "--reply-to" || arg.startsWith("--reply-to="));
   if (replyToIdx !== -1) {
@@ -144,15 +176,9 @@ try {
         expectedRoot = args[rootIdx + 1] || null;
         args.splice(rootIdx, expectedRoot ? 2 : 1);
       }
-      let uri = args[0];
-      if (!uri) throw new Error("thread requires a post uri or handle rkey");
-      // accept "handle rkey" as two args, resolve to at-uri
-      if (!uri.startsWith("at://") && !uri.startsWith("https://")) {
-        const rkey = args[1];
-        if (!rkey) throw new Error("provide a full at-uri or handle rkey");
-        const did = await resolveHandle(uri);
-        uri = `at://${did}/app.bsky.feed.post/${rkey}`;
-      }
+      if (!args[0]) throw new Error("thread requires a post uri, bsky link, handle+rkey, or rkey");
+      const { did: threadOwnDid } = await getSession();
+      const uri = await toAtUri(args[0], args[1], threadOwnDid);
       const { client } = await getAuthedClient();
       const thread = await ok(
         client.get("app.bsky.feed.getPostThread", {
@@ -243,14 +269,9 @@ try {
     }
 
     case "get-post": {
-      let uri = args[0];
-      if (!uri) throw new Error("get-post requires a post uri or handle rkey");
-      if (!uri.startsWith("at://") && !uri.startsWith("https://")) {
-        const rkey = args[1];
-        if (!rkey) throw new Error("provide a full at-uri or handle rkey");
-        const did = await resolveHandle(uri);
-        uri = `at://${did}/app.bsky.feed.post/${rkey}`;
-      }
+      if (!args[0]) throw new Error("get-post requires a post uri, bsky link, handle+rkey, or rkey");
+      const { did: ownDid } = await getSession();
+      const uri = await toAtUri(args[0], args[1], ownDid);
       const { client } = await getAuthedClient();
       const posts = await ok(
         client.get("app.bsky.feed.getPosts", {
@@ -846,8 +867,9 @@ try {
     }
 
     case "delete": {
-      const uri = args[0];
-      if (!uri) throw new Error("delete requires a uri");
+      if (!args[0]) throw new Error("delete requires a uri, bsky link, handle+rkey, or rkey");
+      const { did: delOwnDid } = await getSession();
+      const uri = await toAtUri(args[0], args[1], delOwnDid);
       const { token } = await getAuthedClient();
       await deleteRecord(uri, token);
       console.log("deleted:", uri);
