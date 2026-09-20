@@ -606,7 +606,7 @@ try {
       // `post` already does this; `reply` did not, and an invocation written in the
       // `--text=...` style posted the literal flag as the first chunk of a thread.
       const replyArgs = positionals(args, "reply");
-      const [parentUri, second, ...restArgs] = replyArgs;
+      let [parentUri, second, ...restArgs] = replyArgs;
       if (!parentUri) throw new Error("reply requires at least parentUri");
       // Optional explicit parent CID is useful before appview propagation.
       // It must never be included in the visible reply text.
@@ -617,6 +617,16 @@ try {
       if (!text) throw new Error("reply requires text");
 
       const { session, did, token } = await getAuthedClient();
+
+      // Normalize the parent reference ONCE, for both reply paths below.
+      // `toAtUri` is already what `post`/`quote`/`delete` use; `reply` never
+      // called it, so a bsky.app link or a "<handle> <rkey>" pair reached
+      // `resolveReplyRefs` as a non-AT-URI, `app.bsky.feed.getPosts` returned
+      // no posts, and the verb failed with "could not resolve parent post".
+      // A bare rkey resolves against our own DID by construction, which is
+      // meaningful here only when the parent really is ours.
+      parentUri = await toAtUri(parentUri, undefined, did);
+
       const createdAt = new Date().toISOString();
 
       // Auto-thread: split long replies into chained replies
