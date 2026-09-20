@@ -6,6 +6,7 @@ import {
 import {
   getTrackedItem,
   insertItem,
+  getRelationshipClass,
   loadRelationshipLookup,
   openDb,
 } from "./db.ts";
@@ -581,20 +582,22 @@ export function reclassifyStale() {
   const items = [...db.queryEntries<{
     uri: string;
     author_handle: string | null;
+    author_did: string | null;
     has_unsafe_upstream: number;
     status: string;
     upstream_safety: string | null;
   }>(
-    "select uri, author_handle, has_unsafe_upstream, status, upstream_safety from items",
+    "select uri, author_handle, author_did, has_unsafe_upstream, status, upstream_safety from items",
   )];
 
   for (const item of items) {
-    const trust = item.author_handle
-      ? trustMap.get(item.author_handle.toLowerCase())
-      : undefined;
-    if (!trust) continue;
+    const trust = getRelationshipClass(
+      trustMap,
+      item.author_handle ?? undefined,
+      item.author_did,
+    );
+    if (trust === "unsafe") continue;
     if (
-      trust !== "unsafe" &&
       item.has_unsafe_upstream === 1 &&
       item.upstream_safety === "unsafe"
     ) {

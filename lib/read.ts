@@ -140,6 +140,15 @@ export async function hydrateReplyContext(
     if (!thread?.post) continue;
     const parentPost = thread.post;
     const rootPost = getThreadRootPost(thread);
+    // trust follows the did: walk the node chain once to collect handle->did
+    const authorDids = new Map<string, string>();
+    for (let node: any = thread; node?.post; node = node.parent) {
+      const author = node.post.author;
+      if (author?.handle && author?.did) {
+        authorDids.set(author.handle.toLowerCase(), author.did);
+      }
+    }
+    const didOfAuthor = (h: string) => authorDids.get(h.toLowerCase());
     const ancestorChain = walkAncestors(thread)
       .map((ancestor) => ancestor.author)
       .filter(Boolean);
@@ -149,7 +158,7 @@ export async function hydrateReplyContext(
     const upstreamRelationshipClasses = Object.fromEntries(
       upstreamAuthors.map((author) => [
         author,
-        getRelationshipClass(relationshipMap, author),
+        getRelationshipClass(relationshipMap, author, didOfAuthor(author)),
       ]),
     ) as Record<string, RelationshipClass>;
     map.set(parentUri, {
@@ -160,7 +169,7 @@ export async function hydrateReplyContext(
       upstreamAuthors,
       upstreamRelationshipClasses,
       hasUnsafeUpstream: upstreamAuthors.some((author) =>
-        getRelationshipClass(relationshipMap, author) === "unsafe"
+        getRelationshipClass(relationshipMap, author, didOfAuthor(author)) === "unsafe"
       ),
     });
   }

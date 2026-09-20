@@ -92,28 +92,52 @@ export function openDb() {
   return db;
 }
 
-export function loadRelationshipLookup(db: DB): Map<string, RelationshipClass> {
-  const map = new Map<string, RelationshipClass>();
+export type RelationshipLookup = {
+  byHandle: Map<string, { trust: RelationshipClass; did: string }>;
+  byDid: Map<string, RelationshipClass>;
+};
+
+function normalizeTrust(trust: string): RelationshipClass {
+  return trust === "oomf" || trust === "safe" || trust === "unsafe"
+    ? trust
+    : "unsafe";
+}
+
+export function loadRelationshipLookup(db: DB): RelationshipLookup {
+  const byHandle = new Map<string, { trust: RelationshipClass; did: string }>();
+  const byDid = new Map<string, RelationshipClass>();
   for (
-    const row of db.queryEntries<{ handle: string; trust: string }>(
-      "select handle, trust from relationships where handle is not null",
-    )
+    const row of db.queryEntries<
+      { did: string; handle: string | null; trust: string }
+    >("select did, handle, trust from relationships")
   ) {
-    const trust = row.trust === "oomf" || row.trust === "safe" ||
-        row.trust === "unsafe"
-      ? row.trust
-      : "unsafe";
-    map.set(row.handle.toLowerCase(), trust);
+    const trust = normalizeTrust(row.trust);
+    byDid.set(row.did, trust);
+    if (row.handle) {
+      byHandle.set(row.handle.toLowerCase(), { trust, did: row.did });
+    }
   }
-  return map;
+  return { byHandle, byDid };
 }
 
 export function getRelationshipClass(
-  relationshipMap: Map<string, RelationshipClass>,
+  lookup: RelationshipLookup,
   handle: string | undefined,
+  did?: string | null,
 ): RelationshipClass {
-  if (!handle) return "unsafe";
-  return relationshipMap.get(handle.toLowerCase()) ?? "unsafe";
+  // the did is the identity; the handle is a mutable string that can be
+  // abandoned or claimed by somebody else. trust follows the did.
+  if (did) {
+    const byDid = lookup.byDid.get(did);
+    if (byDid) return byDid;
+  }
+  if (handle) {
+    const row = lookup.byHandle.get(handle.toLowerCase());
+    // never inherit trust across a did disagreement: if this post's did
+    // isn't the one the row was written for, the row is about someone else.
+    if (row && (!did || row.did === did)) return row.trust;
+  }
+  return "unsafe";
 }
 
 export function upsertRelationship(
