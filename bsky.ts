@@ -33,7 +33,7 @@ import {
   scan,
   upsertManualItem,
 } from "./lib/state.ts";
-import { buildFacets, chatFetch, deleteRecord, getRecord, positionals, putRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, toAtUri, writeRecord, uploadBlob } from "./lib/write.ts";
+import { assertNotPath, buildFacets, chatFetch, deleteRecord, getRecord, positionals, putRecord, resolveCid, resolveHandle, resolveReplyRefs, splitIntoThreadChunks, toAtUri, writeRecord, uploadBlob } from "./lib/write.ts";
 import type { Action, RelationshipClass, Status } from "./lib/types.ts";
 
 function parseCliOptions(argv: string[]) {
@@ -406,6 +406,7 @@ try {
       }
       
       if (!text && !imagePath) throw new Error("post requires text or an image (or pipe via stdin)");
+      await assertNotPath(text);
 
       // Dry-run: show splits and exit
       if (dryRun) {
@@ -615,6 +616,7 @@ try {
         ? restArgs.join(" ")
         : [second, ...restArgs].filter(Boolean).join(" ");
       if (!text) throw new Error("reply requires text");
+      await assertNotPath(text);
 
       const { session, did, token } = await getAuthedClient();
 
@@ -824,6 +826,7 @@ try {
       if (!index) throw new Error("reply-n requires an index number");
       const text = args.slice(1).join(" ");
       if (!text) throw new Error("reply-n requires text after the index");
+      await assertNotPath(text);
       const post = getFromCache(index);
       if (!post) throw new Error(`no post at index ${index} in cache`);
       const { session, did, token } = await getAuthedClient();

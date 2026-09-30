@@ -440,6 +440,29 @@ export function positionals(args: string[], command: string): string[] {
   return args.filter((arg) => !arg.startsWith("--"));
 }
 
+
+// Sept 30, 2026: a reply was invoked with four local file PATHS instead of the
+// files' contents, and the tool's success message hid the mistake until the
+// posts were live. Guard against exactly that: refuse text that looks like a
+// filesystem path or names an existing local file.
+export async function assertNotPath(text: string): Promise<void> {
+  const pathLike = /^\/(home|Users|root|tmp|var|opt)\//.test(text) || /^~\//.test(text);
+  if (pathLike) {
+    throw new Error(
+      `refusing to post text that looks like a filesystem path (starts: ${text.slice(0, 60)}...) — did you pass a filename instead of the file's contents?`,
+    );
+  }
+  try {
+    await Deno.stat(text);
+    throw new Error(
+      `refusing to post text that names an existing local file (${text.slice(0, 60)}) — pass the text itself, not a path`,
+    );
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("refusing")) throw e;
+    // file doesn't exist — that's the good case, text is text
+  }
+}
+
 const CHAT_PROXY = "did:web:api.bsky.chat#bsky_chat";
 
 export async function chatFetch(path: string, token: string, init?: RequestInit) {
